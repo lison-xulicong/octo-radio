@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Octopus reference frames</title>
+</head>
+<body>
+<div id="log">rendering…</div>
+<script>document.write('<script src="./octopus-scene.core.js?v=' + Date.now() + '"><\/script>');</script>
+<script>
+// Renders the simulator's scene at fixed (clock, mode) moments and saves the
+// visible band as palette indices, so tools/tests can compare the firmware's
+// frames against the design frame by frame. The firmware shows scene rows
+// ROW0..ROW0+ROWS at the same sea-surface offset the asset export uses.
+const ROW0 = 0, ROWS = 95, SURF_OFF = 0;
+
+// [clock, mode]: the pose is a pure function of these, so they can be rendered
+// out of order. Idle and playing, early and late in the wave.
+const MOMENTS = [
+  [0, 'idle'], [40, 'idle'], [95, 'idle'], [210, 'idle'],
+  [0, 'playing'], [14, 'playing'], [37, 'playing'], [88, 'playing'], [150, 'playing'],
+];
+
+const palIndex = (r, g, b) => {
+  let best = 0, bd = 1e18;
+  QUANT.forEach(({v}, i) => { const d = (r-v[0])**2 + (g-v[1])**2 + (b-v[2])**2; if (d < bd) { bd = d; best = i; } });
+  return best;
+};
+
+function quantised() {
+  const data = h.getImageData(0, 0, SW*SS, SH*SS).data;
+  const out = [];
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < SW; x++) {
+    let r = 0, g = 0, b = 0;
+    for (let sy = 0; sy < SS; sy++) for (let sx = 0; sx < SS; sx++) {
+      const i = (((ROW0+y)*SS+sy)*SW*SS + (x*SS+sx))*4;
+      r += data[i]; g += data[i+1]; b += data[i+2];
+    }
+    out.push(palIndex(r/(SS*SS), g/(SS*SS), b/(SS*SS)));
+  }
+  return out;
+}
+
+globalThis.OCTO_LAYERS = {surfOff: SURF_OFF};
+const frames = MOMENTS.map(([c, m]) => { mode = m; clock = c; drawFrame(); return {clock: c, mode: m, pix: quantised()}; });
+
+fetch('out/reference_frames.json', {method: 'POST', body: JSON.stringify({width: SW, height: ROWS, row0: ROW0, frames})})
+  .then(r => r.text()).then(t => { document.getElementById('log').textContent = 'saved ' + t + ' (' + frames.length + ' frames)'; window.EXPORT_DONE = true; })
+  .catch(e => { document.getElementById('log').textContent = 'failed ' + e; window.EXPORT_DONE = 'error'; });
+</script>
+</body>
+</html>

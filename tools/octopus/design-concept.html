@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Kraken Design</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+    background:#0a1a2a;
+    display:flex; flex-direction:column; align-items:center;
+    padding:32px; gap:16px;
+    font-family:'Courier New',monospace;
+}
+.label { font-size:9px; letter-spacing:2px; color:#334466; }
+.row { display:flex; gap:40px; align-items:flex-start; flex-wrap:wrap; justify-content:center; }
+.col { display:flex; flex-direction:column; align-items:center; gap:8px; }
+canvas { border:1px solid #112233; box-shadow:0 0 40px rgba(40,80,160,0.4); }
+</style>
+</head>
+<body>
+
+<div class="row">
+  <div class="col">
+    <div class="label">240 × 320  (ACTUAL ESP32)</div>
+    <canvas id="c1" width="240" height="320"></canvas>
+  </div>
+  <div class="col">
+    <div class="label">480 × 640  (2× PREVIEW)</div>
+    <canvas id="c2" width="480" height="640"></canvas>
+  </div>
+</div>
+
+<script>
+// ─── draw once, scale for preview ───────────────────────
+function render(canvas, scale) {
+    const ctx = canvas.getContext('2d');
+    ctx.scale(scale, scale);
+    const W = 240, H = 320;
+
+    // ════════════════════════════════════════
+    //  BACKGROUND  — ocean teal → deep indigo
+    // ════════════════════════════════════════
+    let g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0.00, '#7ee8e8');
+    g.addColorStop(0.18, '#4ab8d8');
+    g.addColorStop(0.45, '#2266aa');
+    g.addColorStop(0.75, '#162266');
+    g.addColorStop(1.00, '#08083a');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+    // water shimmer streaks
+    ctx.save();
+    ctx.globalAlpha = 0.18;
+    ctx.strokeStyle = '#aaeeff';
+    ctx.lineWidth = 1.2;
+    [[12,4,70,8],[28,18,90,22],[8,32,50,34],[180,10,230,14],
+     [160,28,220,30],[140,44,200,46]].forEach(([x1,y1,x2,y2])=>{
+        ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+    });
+    ctx.restore();
+
+    // bubbles
+    ctx.save(); ctx.globalAlpha=0.5;
+    [[22,52,3.5],[48,36,2.2],[195,44,2.8],[214,62,1.8],[90,26,2],[166,38,1.5],[130,18,2.5]].forEach(([x,y,r])=>{
+        ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
+        ctx.strokeStyle='rgba(200,245,255,0.9)'; ctx.lineWidth=1; ctx.stroke();
+    });
+    ctx.restore();
+
+    // ════════════════════════════════════════
+    //  HELPERS
+    // ════════════════════════════════════════
+    // draw a thick outlined filled cubic bezier "stroke" (tapered)
+    function cubicStroke(x0,y0, cx1,cy1, cx2,cy2, x1,y1,
+                          wStart, wEnd, fillCol, outlineCol) {
+        const steps = 48;
+        // build left & right offset curves
+        const left=[], right=[];
+        for (let i=0;i<=steps;i++) {
+            const t=i/steps;
+            const u=1-t;
+            const bx = u**3*x0+3*u**2*t*cx1+3*u*t**2*cx2+t**3*x1;
+            const by = u**3*y0+3*u**2*t*cy1+3*u*t**2*cy2+t**3*y1;
+            // tangent
+            const tx2 = 3*(u**2*(cx1-x0)+2*u*t*(cx2-cx1)+t**2*(x1-cx2));
+            const ty2 = 3*(u**2*(cy1-y0)+2*u*t*(cy2-cy1)+t**2*(y1-cy2));
+            const len=Math.sqrt(tx2*tx2+ty2*ty2)||1;
+            const nx=-ty2/len, ny=tx2/len;
+            const w=(wStart+(wEnd-wStart)*t)/2;
+            left.push({x:bx+nx*w, y:by+ny*w});
+            right.push({x:bx-nx*w, y:by-ny*w});
+        }
+        // outline (slightly wider)
+        ctx.beginPath();
+        ctx.moveTo(left[0].x, left[0].y);
+        left.forEach(p=>ctx.lineTo(p.x,p.y));
+        right.slice().reverse().forEach(p=>ctx.lineTo(p.x,p.y));
+        ctx.closePath();
+        ctx.fillStyle=outlineCol; ctx.fill();
+
+        // filled body
+        const shrink=1.5;
+        function shrinkPts(pts, factor) {
+            return pts.map((p,i)=>{
+                const center=left[i]; // approx center
+                const mx=(left[i].x+right[i].x)/2, my=(left[i].y+right[i].y)/2;
+                return {x:mx+(p.x-mx)*(1-factor/(Math.max(wStart,wEnd)/2+0.1)),
+                        y:my+(p.y-my)*(1-factor/(Math.max(wStart,wEnd)/2+0.1))};
+            });
+        }
+        // recompute inner left/right
+        const il=[], ir=[];
+        for (let i=0;i<=steps;i++) {
+            const t=i/steps;
+            const u=1-t;
+            const bx=u**3*x0+3*u**2*t*cx1+3*u*t**2*cx2+t**3*x1;
+            const by=u**3*y0+3*u**2*t*cy1+3*u*t**2*cy2+t**3*y1;
+            const tx2=3*(u**2*(cx1-x0)+2*u*t*(cx2-cx1)+t**2*(x1-cx2));
+            const ty2=3*(u**2*(cy1-y0)+2*u*t*(cy2-cy1)+t**2*(y1-cy2));
+            const len=Math.sqrt(tx2*tx2+ty2*ty2)||1;
+            const nx=-ty2/len, ny=tx2/len;
+            const w=Math.max(0.5,(wStart+(wEnd-wStart)*t)/2-shrink);
+            il.push({x:bx+nx*w, y:by+ny*w});
+            ir.push({x:bx-nx*w, y:by-ny*w});
+        }
+        ctx.beginPath();
+        ctx.moveTo(il[0].x, il[0].y);
+        il.forEach(p=>ctx.lineTo(p.x,p.y));
+        ir.slice().reverse().forEach(p=>ctx.lineTo(p.x,p.y));
+        ctx.closePath();
+        ctx.fillStyle=fillCol; ctx.fill();
+    }
+
+    // gradient tent color at t  (purple-dark → pink-light)
+    function tCol(t, alpha='ff') {
+        const r=Math.round(0x6a+(0xee-0x6a)*t);
+        const gv=Math.round(0x00+(0x88-0x00)*t);
+        const b=Math.round(0xcc+(0xbb-0xcc)*t);
+        return `#${r.toString(16).padStart(2,'0')}${gv.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
+    }
+
+    // draw one tentacle as series of segments with gradient
+    function tentacle(segs) {
+        // segs: [{x0,y0,cx1,cy1,cx2,cy2,x1,y1,w0,w1}]
+        segs.forEach((s, si) => {
+            const tFrac = si / segs.length;
+            const col  = tCol(tFrac);
+            const dark = `rgba(40,0,60,0.85)`;
+            cubicStroke(s.x0,s.y0,s.cx1,s.cy1,s.cx2,s.cy2,s.x1,s.y1,
+                        s.w0, s.w1, col, dark);
+        });
+        // highlight stripe along spine
+        segs.forEach((s, si) => {
+            const tFrac = si / segs.length;
+            const steps=24;
+            ctx.beginPath();
+            for (let i=0;i<=steps;i++) {
+                const t=i/steps, u=1-t;
+                const bx=u**3*s.x0+3*u**2*t*s.cx1+3*u*t**2*s.cx2+t**3*s.x1;
+                const by=u**3*s.y0+3*u**2*t*s.cy1+3*u*t**2*s.cy2+t**3*s.y1;
+                const tx2=3*(u**2*(s.cx1-s.x0)+2*u*t*(s.cx2-s.cx1)+t**2*(s.x1-s.cx2));
+                const ty2=3*(u**2*(s.cy1-s.y0)+2*u*t*(s.cy2-s.cy1)+t**2*(s.y1-s.cy2));
+                const len=Math.sqrt(tx2*tx2+ty2*ty2)||1;
+                const nx=-ty2/len, ny=tx2/len;
+                const w=Math.max(0,(s.w0+(s.w1-s.w0)*t)/2-3);
+                const hx=bx+nx*w*0.55, hy=by+ny*w*0.55;
+                i===0?ctx.moveTo(hx,hy):ctx.lineTo(hx,hy);
+            }
+            ctx.strokeStyle=`rgba(255,210,240,0.35)`;
+            ctx.lineWidth=1.2; ctx.lineJoin='round'; ctx.stroke();
+        });
+    }
+
+    // place white suckers along a cubic bezier
+    function suckers(x0,y0,cx1,cy1,cx2,cy2,x1,y1, wStart, wEnd, step=12) {
+        let dist=step*0.5;
+        let prevX=x0, prevY=y0, traveled=0;
+        const steps=80;
+        for (let i=1;i<=steps;i++) {
+            const t=i/steps, u=1-t;
+            const bx=u**3*x0+3*u**2*t*cx1+3*u*t**2*cx2+t**3*x1;
+            const by=u**3*y0+3*u**2*t*cy1+3*u*t**2*cy2+t**3*y1;
+            const seg=Math.sqrt((bx-prevX)**2+(by-prevY)**2);
+            traveled+=seg;
+            if (traveled>=dist) {
+                traveled=0;
+                const tx2=3*(u**2*(cx1-x0)+2*u*t*(cx2-cx1)+t**2*(x1-cx2));
+                const ty2=3*(u**2*(cy1-y0)+2*u*t*(cy2-cy1)+t**2*(y1-cy2));
+                const len=Math.sqrt(tx2*tx2+ty2*ty2)||1;
+                const nx=-ty2/len, ny=tx2/len;
+                const w=(wStart+(wEnd-wStart)*t)/2;
+                const r=Math.max(1.2, w*0.40);
+                const off=w*0.50;
+                for (const side of [1,-1]) {
+                    const sx=bx+nx*off*side, sy=by+ny*off*side;
+                    // dark ring
+                    ctx.beginPath(); ctx.arc(sx,sy,r+1.2,0,Math.PI*2);
+                    ctx.fillStyle='rgba(20,0,30,0.9)'; ctx.fill();
+                    // white disc
+                    ctx.beginPath(); ctx.arc(sx,sy,r,0,Math.PI*2);
+                    ctx.fillStyle='#f0ece0'; ctx.fill();
+                    // inner shadow ring
+                    ctx.beginPath(); ctx.arc(sx,sy,r*0.55,0,Math.PI*2);
+                    ctx.fillStyle='#c8c0a8'; ctx.fill();
+                    // centre hole
+                    ctx.beginPath(); ctx.arc(sx,sy,r*0.28,0,Math.PI*2);
+                    ctx.fillStyle='rgba(30,0,40,0.8)'; ctx.fill();
+                    // shine
+                    ctx.beginPath(); ctx.arc(sx-r*0.3,sy-r*0.3,r*0.22,0,Math.PI*2);
+                    ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.fill();
+                }
+            }
+            prevX=bx; prevY=by;
+        }
+    }
+
+    // ════════════════════════════════════════
+    //  TENTACLES  — hook shape:
+    //  spread out from body centre → sweep UP past head → curl hook peak → hang DOWN
+    //  cx=120, body_y=180
+    // ════════════════════════════════════════
+    const CX=120, BY=178;
+
+    // Each tentacle = 2 cubic segments: [rise, hang]
+    // rise: root → hook peak (above head)
+    // hang: hook peak → tip (bottom of image)
+
+    const tentDefs = [
+        // ── FAR LEFT ──────────────────────────────────────────────────────────
+        {rise:[ CX-45,BY+8,  CX-130,BY-20,  CX-160,BY-100, CX-148,8  ],
+         hang:[ CX-148,8,    CX-152,80,     CX-136,200,    CX-120,H+10],
+         rw:[18,12], hw:[12,4]},
+        // ── LEFT OUTER ────────────────────────────────────────────────────────
+        {rise:[ CX-36,BY+12, CX-105,BY-10,  CX-125,BY-90,  CX-112,12 ],
+         hang:[ CX-112,12,   CX-118,75,     CX-104,195,    CX-92, H+8 ],
+         rw:[16,10], hw:[10,3]},
+        // ── LEFT MID ──────────────────────────────────────────────────────────
+        {rise:[ CX-25,BY+16, CX-72, BY+5,   CX-90, BY-65,  CX-76, 16 ],
+         hang:[ CX-76, 16,   CX-80, 68,     CX-68, 185,    CX-55, H+6 ],
+         rw:[14,9], hw:[9,2.5]},
+        // ── LEFT INNER ────────────────────────────────────────────────────────
+        {rise:[ CX-14,BY+18, CX-42, BY+10,  CX-55, BY-42,  CX-42, 22 ],
+         hang:[ CX-42, 22,   CX-44, 62,     CX-36, 175,    CX-25, H+4 ],
+         rw:[12,8], hw:[8,2]},
+        // ── RIGHT INNER ───────────────────────────────────────────────────────
+        {rise:[ CX+14,BY+18, CX+42, BY+10,  CX+55, BY-42,  CX+42, 22 ],
+         hang:[ CX+42, 22,   CX+44, 62,     CX+36, 175,    CX+25, H+4 ],
+         rw:[12,8], hw:[8,2]},
+        // ── RIGHT MID ─────────────────────────────────────────────────────────
+        {rise:[ CX+25,BY+16, CX+72, BY+5,   CX+90, BY-65,  CX+76, 16 ],
+         hang:[ CX+76, 16,   CX+80, 68,     CX+68, 185,    CX+55, H+6 ],
+         rw:[14,9], hw:[9,2.5]},
+        // ── RIGHT OUTER ───────────────────────────────────────────────────────
+        {rise:[ CX+36,BY+12, CX+105,BY-10,  CX+125,BY-90,  CX+112,12 ],
+         hang:[ CX+112,12,   CX+118,75,     CX+104,195,    CX+92, H+8 ],
+         rw:[16,10], hw:[10,3]},
+        // ── FAR RIGHT ─────────────────────────────────────────────────────────
+        {rise:[ CX+45,BY+8,  CX+130,BY-20,  CX+160,BY-100, CX+148,8  ],
+         hang:[ CX+148,8,    CX+152,80,     CX+136,200,    CX+120,H+10],
+         rw:[18,12], hw:[12,4]},
+    ];
+
+    // draw tentacle outlines first (all behind head)
+    tentDefs.forEach(td=>{
+        tentacle([
+            {x0:td.rise[0],y0:td.rise[1],cx1:td.rise[2],cy1:td.rise[3],
+             cx2:td.rise[4],cy2:td.rise[5],x1:td.rise[6],y1:td.rise[7],
+             w0:td.rw[0],w1:td.rw[1]},
+            {x0:td.hang[0],y0:td.hang[1],cx1:td.hang[2],cy1:td.hang[3],
+             cx2:td.hang[4],cy2:td.hang[5],x1:td.hang[6],y1:td.hang[7],
+             w0:td.hw[0],w1:td.hw[1]},
+        ]);
+    });
+    // suckers on top
+    tentDefs.forEach(td=>{
+        suckers(...td.rise, td.rw[0], td.rw[1], 10);
+        suckers(...td.hang, td.hw[0], td.hw[1], 9);
+    });
+
+    // ════════════════════════════════════════
+    //  MANTLE  (golden amber dome)
+    // ════════════════════════════════════════
+    const MX=CX, MY=BY-44;
+
+    // drop shadow
+    ctx.save(); ctx.filter='blur(7px)';
+    ctx.fillStyle='rgba(0,0,20,0.5)';
+    ctx.beginPath(); ctx.ellipse(MX+4,MY+6,56,44,0,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+
+    // main dome — radial gradient amber
+    let mg = ctx.createRadialGradient(MX-14,MY-20,3, MX,MY,58);
+    mg.addColorStop(0.00,'#fae070');
+    mg.addColorStop(0.30,'#f0b030');
+    mg.addColorStop(0.65,'#c07818');
+    mg.addColorStop(1.00,'#7a4808');
+    ctx.fillStyle=mg;
+    ctx.beginPath(); ctx.ellipse(MX,MY,56,44,0,0,Math.PI*2); ctx.fill();
+
+    // scale / bubble texture (like reference)
+    ctx.save();
+    ctx.beginPath(); ctx.ellipse(MX,MY,56,44,0,0,Math.PI*2); ctx.clip();
+    const scalePositions=[
+        [-30,-26],[-16,-32],[-2,-34],[12,-30],[26,-22],[34,-10],
+        [-38,-10],[-28,-4],[-14,-8],[0,-6],[16,-4],[30,0],[38,10],
+        [-34,8],[-20,12],[-6,14],[10,12],[24,10],[36,20],
+        [-26,22],[-10,24],[6,24],[20,22],[30,28],
+        [-16,32],[0,34],[14,30],
+    ];
+    scalePositions.forEach(([dx,dy])=>{
+        const sx=MX+dx, sy=MY+dy;
+        const r=6+Math.sin(dx*0.4)*1.5;
+        ctx.beginPath(); ctx.arc(sx,sy,r,0,Math.PI*2);
+        ctx.fillStyle='rgba(140,70,0,0.35)'; ctx.fill();
+        ctx.beginPath(); ctx.arc(sx-1,sy-1,r*0.5,0,Math.PI*2);
+        ctx.fillStyle='rgba(255,240,120,0.25)'; ctx.fill();
+    });
+    ctx.restore();
+
+    // sheen arc
+    ctx.save(); ctx.globalAlpha=0.35;
+    ctx.strokeStyle='#fff5cc'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.ellipse(MX-12,MY-10,28,18,-0.45,-0.9,0.3); ctx.stroke();
+    ctx.restore();
+
+    // outline
+    ctx.strokeStyle='#3a1800'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.ellipse(MX,MY,56,44,0,0,Math.PI*2); ctx.stroke();
+
+    // ════════════════════════════════════════
+    //  FACE / LOWER HEAD
+    // ════════════════════════════════════════
+    const FX=CX, FY=BY-6;
+
+    // shadow
+    ctx.save(); ctx.filter='blur(5px)';
+    ctx.fillStyle='rgba(0,0,20,0.45)';
+    ctx.beginPath(); ctx.ellipse(FX+3,FY+5,50,30,0,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+
+    // face skin — gradient from amber-tan to dark purple-brown
+    let fg=ctx.createRadialGradient(FX-10,FY-10,4,FX,FY+4,52);
+    fg.addColorStop(0,'#d4884a');
+    fg.addColorStop(0.4,'#a05828');
+    fg.addColorStop(0.75,'#6a3010');
+    fg.addColorStop(1,'#3a1408');
+    ctx.fillStyle=fg;
+    ctx.beginPath(); ctx.ellipse(FX,FY,50,28,0,0,Math.PI*2); ctx.fill();
+
+    // skin texture patches
+    [[20,8,8],[-18,4,7],[6,-4,6],[-4,10,5],[28,-2,6],[-30,-2,5]].forEach(([dx,dy,r])=>{
+        ctx.fillStyle='rgba(80,20,0,0.28)';
+        ctx.beginPath(); ctx.ellipse(FX+dx,FY+dy,r,r*0.7,0,0,Math.PI*2); ctx.fill();
+    });
+
+    ctx.strokeStyle='#250a00'; ctx.lineWidth=2.5;
+    ctx.beginPath(); ctx.ellipse(FX,FY,50,28,0,0,Math.PI*2); ctx.stroke();
+
+    // ── EYES ──────────────────────────────────────────────
+    [[-18,-5],[18,-5]].forEach(([dx,dy])=>{
+        const ex=FX+dx, ey=FY+dy;
+        // socket
+        ctx.fillStyle='#0a0010';
+        ctx.beginPath(); ctx.ellipse(ex,ey,13,9.5,0,0,Math.PI*2); ctx.fill();
+        // sclera — yellow-cream (authentic octopus)
+        let eg=ctx.createRadialGradient(ex-2,ey-2,1,ex,ey,11);
+        eg.addColorStop(0,'#d8d498'); eg.addColorStop(1,'#a8a060');
+        ctx.fillStyle=eg;
+        ctx.beginPath(); ctx.ellipse(ex,ey,11,8,0,0,Math.PI*2); ctx.fill();
+        // iris
+        ctx.fillStyle='#6a8818';
+        ctx.beginPath(); ctx.ellipse(ex,ey,7,6,0,0,Math.PI*2); ctx.fill();
+        // rectangular horizontal pupil (accurate for octopus)
+        ctx.fillStyle='#06020e';
+        ctx.beginPath(); ctx.ellipse(ex,ey,2.2,7,Math.PI/2,0,Math.PI*2); ctx.fill();
+        // pupil taper ends
+        ctx.fillStyle='#030108';
+        ctx.beginPath(); ctx.ellipse(ex-7,ey,2,1.5,0,0,Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(ex+7,ey,2,1.5,0,0,Math.PI*2); ctx.fill();
+        // cornea shine
+        ctx.fillStyle='rgba(255,255,220,0.85)';
+        ctx.beginPath(); ctx.arc(ex-3.5,ey-3,2.2,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='rgba(255,255,200,0.4)';
+        ctx.beginPath(); ctx.arc(ex+2,ey-2,1.2,0,Math.PI*2); ctx.fill();
+        // outline
+        ctx.strokeStyle='#1a0808'; ctx.lineWidth=1.5;
+        ctx.beginPath(); ctx.ellipse(ex,ey,11,8,0,0,Math.PI*2); ctx.stroke();
+    });
+
+    // ── MANTLE–FACE JOIN wrinkle ──────────────────────────
+    ctx.save(); ctx.globalAlpha=0.45;
+    ctx.strokeStyle='#3a1000'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(FX-45,FY-14); ctx.bezierCurveTo(FX-20,FY-22,FX+20,FY-22,FX+45,FY-14); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(FX-40,FY-6); ctx.bezierCurveTo(FX-18,FY-16,FX+18,FY-16,FX+40,FY-6); ctx.stroke();
+    ctx.restore();
+
+    // ── FACIAL TENTACLES (8 short ones below face) ────────
+    const ftRoots=[-20,-12,-4,4,12,20].map((dx,i)=>({x:FX+dx, y:FY+22+Math.abs(dx)*0.08}));
+    ftRoots.forEach((r,i)=>{
+        const tipX=r.x+(r.x-FX)*0.35+(i%2===0?-2:2);
+        const tipY=r.y+16+Math.abs(r.x-FX)*0.1;
+        const cpx=r.x+(tipX-r.x)*0.4+(i%2===0?-3:3);
+        const cpy=r.y+(tipY-r.y)*0.5;
+        // shadow
+        ctx.beginPath(); ctx.moveTo(r.x+1,r.y+1);
+        ctx.quadraticCurveTo(cpx+1,cpy+1,tipX+1,tipY+1);
+        ctx.strokeStyle='rgba(0,0,20,0.5)'; ctx.lineWidth=4; ctx.lineCap='round'; ctx.stroke();
+        // body
+        ctx.beginPath(); ctx.moveTo(r.x,r.y);
+        ctx.quadraticCurveTo(cpx,cpy,tipX,tipY);
+        ctx.strokeStyle='#5500aa'; ctx.lineWidth=3.5; ctx.lineCap='round'; ctx.stroke();
+        // highlight
+        ctx.strokeStyle='#bb66ee'; ctx.lineWidth=1.2; ctx.stroke();
+    });
+
+    // ════════════════════════════════════════
+    //  foreground depth — darken bottom edge
+    // ════════════════════════════════════════
+    let fog=ctx.createLinearGradient(0,H*0.82,0,H);
+    fog.addColorStop(0,'transparent');
+    fog.addColorStop(1,'rgba(5,5,25,0.6)');
+    ctx.fillStyle=fog; ctx.fillRect(0,H*0.82,W,H*0.18);
+}
+
+render(document.getElementById('c1'), 1);
+render(document.getElementById('c2'), 2);
+</script>
+</body>
+</html>

@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>OCTO RADIO 模拟器</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0b0716;min-height:100vh;display:flex;flex-direction:column;align-items:center;
+  padding:22px 16px;gap:14px;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#8a78b8}
+h2{font-size:11px;letter-spacing:3px;color:#6a56a0;font-weight:500}
+
+.bezel{background:#16102a;border:3px solid #2f2250;border-radius:14px;padding:10px;
+  box-shadow:0 0 40px rgba(110,60,200,.25),inset 0 0 18px rgba(0,0,0,.6)}
+#lcd{display:block;width:240px;height:320px;image-rendering:pixelated;background:#000}
+.scale2 #lcd{width:480px;height:640px}
+
+.ctl{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;max-width:520px}
+.ctl button{padding:7px 14px;background:#1a1230;color:#a68ad8;border:1px solid #3a2a66;border-radius:4px;
+  cursor:pointer;font:inherit;font-size:12px;transition:background .15s}
+.ctl button:hover{background:#2a1c4a;color:#c8aaff}
+.ctl button:active{transform:scale(.97)}
+.ctl button.on{background:#3d2070;color:#e6d2ff;border-color:#7a4ab8}
+.keys{font-size:11px;color:#54447c;letter-spacing:.5px;text-align:center;line-height:1.8}
+.keys b{color:#8a6ec8;font-weight:500}
+</style>
+</head>
+<body>
+<h2>◈ OCTO RADIO · 240×320 ◈</h2>
+
+<div class="bezel" id="bezel"><canvas id="lcd" width="240" height="320"></canvas></div>
+
+<div class="ctl">
+  <button id="bUp">▲ 上一台</button>
+  <button id="bOk">● 确定</button>
+  <button id="bDown">▼ 下一台</button>
+  <button id="bLong">⏎ 长按</button>
+  <button id="bScale">2× 放大</button>
+</div>
+<div class="keys">
+  <b>↑ ↓</b> 换台 / 选择 &nbsp; <b>空格 / 回车</b> 确定 &nbsp; <b>S / 长按键</b> 设置 &nbsp; <b>Esc</b> 返回
+</div>
+
+<script>
+/*__SCENE_CORE__*/
+
+// ══════════════════════════════════════════════════════════
+//  The octopus scene is rendered into `hi` (SW*SS x SH*SS),
+//  quantised to the palette, then painted at 2x into this
+//  offscreen buffer. The UI is drawn on top at native 240x320.
+// ══════════════════════════════════════════════════════════
+const SCREEN_W=240, SCREEN_H=320;
+const lcd=document.getElementById('lcd');
+const L=lcd.getContext('2d');
+L.imageSmoothingEnabled=false;
+
+const sceneBuf=document.createElement('canvas');
+sceneBuf.width=SW; sceneBuf.height=SH;           // 120x160, one px per sprite px
+const sb=sceneBuf.getContext('2d');
+const sceneImg=sb.createImageData(SW,SH);
+
+function renderScene(){
+  drawFrame();                                    // draws into hi (from the core)
+  const src=h.getImageData(0,0,SW*SS,SH*SS).data;
+  const d=sceneImg.data;
+  for(let y=0;y<SH;y++){
+    for(let x=0;x<SW;x++){
+      let r=0,g=0,b=0;
+      for(let sy=0;sy<SS;sy++)for(let sx=0;sx<SS;sx++){
+        const i=(((y*SS+sy)*SW*SS)+(x*SS+sx))*4;
+        r+=src[i];g+=src[i+1];b+=src[i+2];
+      }
+      const c=nearest(r/(SS*SS),g/(SS*SS),b/(SS*SS));
+      const o=(y*SW+x)*4;
+      d[o]=c[0];d[o+1]=c[1];d[o+2]=c[2];d[o+3]=255;
+    }
+  }
+  sb.putImageData(sceneImg,0,0);
+  L.imageSmoothingEnabled=false;
+  L.drawImage(sceneBuf,0,0,SW,SH,0,0,SCREEN_W,SCREEN_H);   // 2x nearest-neighbour
+}
+
+// ══════════════════════════════════════════════════════════
+//  UI — mirrors main/radio_ui.cc: same palette values, same
+//  layout coordinates, same page structure.
+// ══════════════════════════════════════════════════════════
+const UI={
+  panel:'#0D1B23', panelSoft:'#11262E', grid:'#24404A',
+  text:'#F4F0DE', muted:'#849BA0',
+  amber:'#FFB74D', amberSoft:'#7F5A29', green:'#4ED39A', red:'#FF5D62',
+};
+// Over the octopus scene the opaque panels would hide it, so the
+// panels from the device layout are drawn translucent.
+const FONT_CN="'PingFang SC','Microsoft YaHei','Noto Sans CJK SC',sans-serif";
+const FONT_EN="'SF Mono','Menlo','Consolas',monospace";
+
+function box(x,y,w,h2,col,alpha=1,r=0){
+  L.save(); L.globalAlpha=alpha; L.fillStyle=col;
+  if(r>0){L.beginPath();L.roundRect(x,y,w,h2,r);L.fill();} else L.fillRect(x,y,w,h2);
+  L.restore();
+}
+function strokeBox(x,y,w,h2,col,alpha=1,r=0){
+  L.save(); L.globalAlpha=alpha; L.strokeStyle=col; L.lineWidth=1;
+  L.beginPath(); L.roundRect(x+.5,y+.5,w-1,h2-1,r); L.stroke(); L.restore();
+}
+function text(str,x,y,col,{size=14,font=FONT_CN,align='left',weight='400',shadow=true}={}){
+  L.save();
+  L.font=`${weight} ${size}px ${font}`;
+  L.textAlign=align; L.textBaseline='top'; L.fillStyle=col;
+  if(shadow){ L.shadowColor='rgba(4,2,16,.85)'; L.shadowBlur=3; L.shadowOffsetY=1; }
+  L.fillText(str,x,y);
+  L.restore();
+}
+
+// ── State, matching the firmware's own variables ──
+const STATIONS=[
+  {name:'清晨音乐',   desc:'轻松音乐 · 网络直播', mhz:90.7},
+  {name:'城市交通台', desc:'路况 · 资讯',         mhz:95.3},
+  {name:'流行金曲',   desc:'华语流行 · 热歌榜',   mhz:98.1},
+  {name:'经典怀旧',   desc:'老歌 · 金曲回忆',     mhz:101.7},
+  {name:'夜话',       desc:'情感 · 陪伴',         mhz:104.5},
+  {name:'新闻综合',   desc:'本地 · 国内 · 国际',  mhz:107.1},
+];
+const MENU=['音量','城市电台','定时播放','屏幕设置','网络设置','返回'];
+const CITIES=['自动定位','北京','上海','广州','深圳','长沙','杭州','成都'];
+const SLEEP_ITEMS=['无定时','15 分钟','30 分钟','60 分钟','90 分钟','返回'];
+const SLEEP_MIN=[0,15,30,60,90,0];
+
+let page='main';          // main | menu | city | sleep | display | volume | wifi
+let station=0, playing=false;
+let volume=55, brightness=72;
+let city='长沙';
+let sleepEnd=0;           // epoch ms, 0 = off
+let sel=0;                // highlighted row on list pages
+let needleX=null;         // animated dial needle
+const meter=new Float32Array(18);
+
+const DIAL={left:16,right:198};
+function dialX(mhz){ return DIAL.left+(mhz-88)*(DIAL.right-DIAL.left)/20; }
+
+// ── Main page ──
+// The octopus is the hero, so it owns y=40..176. Everything the
+// firmware shows (station, dial, meter, status) is stacked below it.
+// Colours, fonts and the 3-button model match radio_ui.cc; only the
+// vertical layout differs from the firmware.
+const BAND_ROWS=32, BAND_FADE=12, BASELINE=24;
+function drawMain(){
+  const s=STATIONS[station];
+
+  // top bar, on a dark band so it stays legible over the bright surface.
+  // The band fades out below itself rather than ending on an edge, and the
+  // brand, clock, signal and battery all stand on one baseline (y=24).
+  box(0,0,SCREEN_W,BAND_ROWS,'#071017',.62);
+  for(let i=0;i<BAND_FADE;i++){
+    box(0,BAND_ROWS+i,SCREEN_W,1,'#071017',.62*(BAND_FADE-i)/(BAND_FADE+1));
+  }
+  text('OCTO RADIO',12,BASELINE-12,UI.amber,{size:12,font:FONT_EN,weight:'700'});
+  const now=new Date();
+  text(String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0'),
+       173,BASELINE-18,UI.text,{size:18,font:FONT_EN,align:'right'});
+  for(let i=0;i<3;i++){const hh=Math.round(9*(i+1)/3); box(178+i*5,BASELINE-hh,3,hh,UI.muted);}
+  text('87%',234,BASELINE-12,UI.muted,{size:12,font:FONT_EN,align:'right'});
+
+  // channel + sleep timer, in the clear water above the arms
+  text(`CH ${String(station+1).padStart(2,'0')} / ${String(STATIONS.length).padStart(2,'0')}`,
+       13,44,UI.amber,{size:12,font:FONT_EN});
+  if(sleepEnd){
+    const left=Math.max(0,Math.round((sleepEnd-Date.now())/1000));
+    text(`定时 ${String(Math.floor(left/60)).padStart(2,'0')}:${String(left%60).padStart(2,'0')}`,
+         227,43,UI.amber,{size:12,align:'right'});
+  }
+
+  // --- octopus occupies y=40..176 (drawn by renderScene) ---
+
+  // station name + description, in the gap between the octopus
+  // (ends at y≈190) and the dial (starts at y=224)
+  text(s.name,120,193,UI.text,{size:15,align:'center',weight:'600'});
+  text(s.desc,120,211,UI.muted,{size:10,align:'center'});
+
+  // dial
+  const PY=224, PH=46;
+  box(13,PY,214,PH,UI.panel,.78,8);
+  strokeBox(13,PY,214,PH,UI.grid,.9,8);
+  const TR=24;                                   // track baseline inside the panel
+  const TICKS=41;
+  for(let i=0;i<TICKS;i++){
+    const major=i%8===0, medium=i%2===0;
+    if(!major&&!medium) continue;
+    const x=13+DIAL.left+i*(DIAL.right-DIAL.left)/(TICKS-1);
+    const hh=major?9:5;
+    box(Math.round(x),PY+TR-hh,major?2:1,hh,major?UI.grid:UI.amberSoft);
+  }
+  [88,92,96,100,104,108].forEach(m=>{
+    text(String(m),13+dialX(m),PY+3,UI.muted,{size:10,font:FONT_EN,align:'center',shadow:false});
+  });
+  box(13+DIAL.left,PY+TR,DIAL.right-DIAL.left+1,2,UI.grid);
+
+  const target=dialX(s.mhz);
+  if(needleX===null) needleX=target;
+  needleX+=(target-needleX)*0.22;
+  box(13+needleX-8,PY+TR-3,16,7,UI.amber,.20,4);
+  box(Math.round(13+needleX-1.5),PY+TR-9,3,17,UI.amber);
+  text(city==='自动定位'?'NATIONAL':city,21,PY+31,UI.amber,{size:11,shadow:false});
+  text(s.mhz.toFixed(1)+' MHz',13+206,PY+31,UI.amber,{size:11,font:FONT_EN,align:'right',shadow:false});
+
+  // level meter, slim
+  box(13,274,214,13,UI.panelSoft,.7,4);
+  for(let i=0;i<18;i++){
+    const hgt=Math.max(2,Math.round(meter[i]*10));
+    const col=i>14?UI.red:i>10?UI.amber:UI.green;
+    box(13+9+i*11,274+11-hgt,6,hgt,meter[i]>.02?col:UI.grid,meter[i]>.02?1:.7,1);
+  }
+
+  // status line
+  text(playing?'II':'>',13,290,UI.amber,{size:14,font:FONT_EN,weight:'700'});
+  text(playing?'播放中':'准备播放',34,291,UI.text,{size:13});
+  if(playing) text('VOL '+volume+'%',227,292,UI.muted,{size:11,font:FONT_EN,align:'right'});
+  box(12,305,216,1,UI.grid,.9);
+  text('上下换台  确定播放  长按设置',120,307,UI.muted,{size:11,align:'center'});
+}
+
+// ── List pages (menu / city / sleep / display) ──
+function drawList(title,items,hint,values){
+  box(0,0,SCREEN_W,SCREEN_H,'#071017',.93);
+  text(title,120,14,UI.text,{size:20,align:'center',weight:'600'});
+  box(12,44,216,1,UI.grid);
+  const rows=7, rowH=34, top=52;
+  const first=Math.max(0,Math.min(sel-Math.floor(rows/2),items.length-rows));
+  for(let r=0;r<Math.min(rows,items.length);r++){
+    const i=first+r, y=top+r*rowH, on=i===sel;
+    if(on){ box(12,y,216,rowH-4,UI.amber,.16,6); strokeBox(12,y,216,rowH-4,UI.amber,.85,6); }
+    text(items[i],24,y+7,on?UI.amber:UI.text,{size:15,shadow:false});
+    if(values&&values[i]) text(values[i],216,y+8,on?UI.amber:UI.muted,{size:13,font:FONT_EN,align:'right',shadow:false});
+  }
+  box(12,296,216,1,UI.grid);
+  text(hint,120,300,UI.muted,{size:12,align:'center'});
+}
+
+function drawVolume(){
+  box(0,0,SCREEN_W,SCREEN_H,'#071017',.93);
+  text('音量',120,16,UI.text,{size:20,align:'center',weight:'600'});
+  text(String(volume),120,104,UI.amber,{size:56,font:FONT_EN,align:'center',weight:'700'});
+  box(24,196,192,14,UI.panelSoft,1,7);
+  box(24,196,Math.round(192*volume/100),14,UI.amber,1,7);
+  text('上下调节  确定返回',120,300,UI.muted,{size:12,align:'center'});
+}
+
+function drawWifi(){
+  box(0,0,SCREEN_W,SCREEN_H,'#071017',.93);
+  text('网络设置',120,13,UI.text,{size:20,align:'center',weight:'600'});
+  box(12,44,216,1,UI.grid);
+  box(18,60,204,100,UI.panel,.9,10); strokeBox(18,60,204,100,UI.grid,1,10);
+  text('已连接',120,76,UI.green,{size:13,align:'center'});
+  text('OCTO-Example',120,102,UI.amber,{size:16,font:FONT_EN,align:'center'});
+  text('192.168.1.42',120,132,UI.muted,{size:12,font:FONT_EN,align:'center'});
+  text('长按返回',120,300,UI.muted,{size:12,align:'center'});
+}
+
+function render(){
+  renderScene();
+  if(page==='main') drawMain();
+  else if(page==='menu'){
+    const vals=['','','',  '','','',''];
+    vals[0]=volume+'%'; vals[1]=city; vals[2]=sleepEnd?'进行中':'关闭';
+    drawList('设置',MENU,'上下选择  确定进入',vals);
+  }
+  else if(page==='city') drawList('城市电台',CITIES,'确定选择  长按返回',CITIES.map(c=>c===city?'✓':''));
+  else if(page==='sleep') drawList('定时播放',SLEEP_ITEMS,'确定开始  长按返回');
+  else if(page==='display') drawList('屏幕设置',['亮度 '+brightness+'%','自动熄屏 60 秒','返回'],'确定切换  长按返回');
+  else if(page==='volume') drawVolume();
+  else if(page==='wifi') drawWifi();
+}
+
+// ══════════════════════════════════════════════════════════
+//  Animation state shared by the scene and the UI
+// ══════════════════════════════════════════════════════════
+function stepMeters(){
+  for(let i=0;i<18;i++){
+    if(playing){
+      const bias=1-i/22;                           // lows are louder
+      const t=Math.random()*0.85*bias+0.06;
+      meter[i]+=(t-meter[i])*0.42;
+    } else meter[i]*=0.82;
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  Input — one 3-button model, same as the device
+// ══════════════════════════════════════════════════════════
+const MENU_PAGES={1:'city',2:'sleep',3:'display',4:'wifi'};
+function press(btn){
+  if(page==='main'){
+    if(btn==='up') station=(station-1+STATIONS.length)%STATIONS.length;
+    else if(btn==='down') station=(station+1)%STATIONS.length;
+    else if(btn==='ok'){ playing=!playing; setMode(playing?'playing':'idle'); }
+    else if(btn==='long'){ page='menu'; sel=0; }
+    return;
+  }
+  if(btn==='back'||btn==='long'){
+    page = page==='menu' ? 'main' : (['city','sleep','display','wifi','volume'].includes(page)?'menu':'main');
+    sel=0; return;
+  }
+  if(page==='volume'){
+    if(btn==='up') volume=Math.min(100,volume+5);
+    else if(btn==='down') volume=Math.max(0,volume-5);
+    else if(btn==='ok') page='menu';
+    return;
+  }
+  const count = page==='menu'?MENU.length : page==='city'?CITIES.length : page==='sleep'?SLEEP_ITEMS.length : page==='display'?3 : 1;
+  if(btn==='up') sel=(sel-1+count)%count;
+  else if(btn==='down') sel=(sel+1)%count;
+  else if(btn==='ok'){
+    if(page==='menu'){
+      if(sel===0) page='volume';
+      else if(MENU_PAGES[sel]){ page=MENU_PAGES[sel]; sel=0; }
+      else if(sel===MENU.length-1){ page='main'; }
+    } else if(page==='city'){ city=CITIES[sel]; page='menu'; sel=1; }
+    else if(page==='sleep'){
+      sleepEnd = SLEEP_MIN[sel]? Date.now()+SLEEP_MIN[sel]*60000 : 0;
+      page='main';
+    } else if(page==='display'){
+      if(sel===0) brightness = brightness>=100?20:brightness+20;
+      else if(sel===2){ page='menu'; sel=3; }
+    }
+  }
+}
+
+document.getElementById('bUp').onclick=()=>press('up');
+document.getElementById('bDown').onclick=()=>press('down');
+document.getElementById('bOk').onclick=()=>press('ok');
+document.getElementById('bLong').onclick=()=>press('long');
+document.getElementById('bScale').onclick=e=>{
+  const big=document.body.classList.toggle('scale2');
+  e.target.textContent=big?'1× 还原':'2× 放大'; e.target.classList.toggle('on',big);
+};
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowUp'){e.preventDefault();press('up');}
+  else if(e.key==='ArrowDown'){e.preventDefault();press('down');}
+  else if(e.key===' '||e.key==='Enter'){e.preventDefault();press('ok');}
+  else if(e.key==='s'||e.key==='S') press('long');
+  else if(e.key==='Escape') press('back');
+});
+
+// ══════════════════════════════════════════════════════════
+//  Loop — 18 fps, as the hardware can drive
+// ══════════════════════════════════════════════════════════
+let lastT=0;
+function loop(ts){
+  if(ts-lastT>55){
+    lastT=ts;
+    clock++;
+    stepMeters();
+    render();
+  }
+  requestAnimationFrame(loop);
+}
+// `mode` drives the octopus (idle / playing); setMode is defined by the core's host page,
+// so provide it here.
+function setMode(m){ mode=m; }
+setMode('idle');
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

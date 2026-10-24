@@ -1,0 +1,38 @@
+menu "OCTO Radio"
+
+    choice RADIO_OCTOPUS_QUALITY
+        prompt "Main page octopus scene"
+        default RADIO_OCTOPUS_QUALITY_FULL
+        help
+            How much work the animated octopus on the main page does per frame.
+
+            Full draws every layer as designed. Lite keeps the same scene, the
+            same animation and the same frame rate target, and spends less time
+            per frame by shading each arm with 3 bands instead of 6 and placing
+            them further apart. It differs from Full only in the smoothness of
+            the arm shading. Choose Lite if Full does not reach a steady frame
+            rate on the device, or if audio glitches while it runs.
+
+            Off shows the plain water background with no octopus, for finding
+            out whether the scene is the cause of a problem.
+
+        config RADIO_OCTOPUS_QUALITY_FULL
+            bool "Full"
+
+        config RADIO_OCTOPUS_QUALITY_LITE
+            bool "Lite"
+
+        config RADIO_OCTOPUS_QUALITY_OFF
+            bool "Off (water only)"
+
+    endchoice
+
+    config RADIO_OCTOPUS_FRAME_MS
+        int "Octopus frame interval (ms)"
+        range 33 250
+        default 80
+        help
+            Time between octopus frames. 80 is about 12 frames per second. Raise
+            it to leave more CPU for audio and Wi-Fi, lower it for smoother motion.
+
+endmenu

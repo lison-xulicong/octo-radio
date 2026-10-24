@@ -1,0 +1,23 @@
+# ESP-IDF build output
+build/
+build-*/
+managed_components/
+sdkconfig
+sdkconfig.old
+*.bin
+*.elf
+*.map
+
+# Local tooling
+.vscode/
+.idea/
+.claude/
+.gstack/
+**/__pycache__/
+*.swp
+.DS_Store
+/simulator.old.html
+
+# Never commit device credentials or flash dumps
+nvs_backup*
+*.nvs

@@ -1,0 +1,1011 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Pixel Octopus — Animated</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0e0620;display:flex;flex-direction:column;align-items:center;
+  padding:24px;gap:16px;font-family:'Courier New',monospace;color:#8866bb}
+h2{font-size:10px;letter-spacing:3px;color:#6a4a9a}
+.row{display:flex;gap:28px;align-items:flex-start;flex-wrap:wrap;justify-content:center}
+.col{display:flex;flex-direction:column;align-items:center;gap:6px}
+.lbl{font-size:8px;letter-spacing:2px;color:#4a3570}
+canvas{image-rendering:pixelated;border:1px solid #2a1844;background:#0a0414}
+.ctl{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:4px}
+.ctl button{padding:6px 14px;background:#1a0f2e;color:#a878dd;border:1px solid #3d2560;
+  border-radius:3px;cursor:pointer;font-family:inherit;font-size:10px;letter-spacing:1px}
+.ctl button:hover{background:#2a1a44;color:#c89aff}
+.ctl button.on{background:#3d2070;color:#e0c0ff;border-color:#7a4ab8}
+.pal{display:flex;gap:3px;flex-wrap:wrap;max-width:440px;justify-content:center}
+.sw{width:18px;height:18px;border:1px solid #2a1844}
+.note{max-width:460px;font-size:9px;color:#4a3570;line-height:1.8;letter-spacing:.5px;
+  border-left:2px solid #2a1844;padding-left:12px;margin-top:8px}
+.note b{color:#8858c8}
+</style>
+</head>
+<body>
+
+<h2>◈ PIXEL OCTOPUS — 紫色身体 / 动效就绪 ◈</h2>
+
+<div class="row">
+  <div class="col"><div class="lbl">1× &nbsp;120×125</div><canvas id="s1" width="120" height="125"></canvas></div>
+  <div class="col"><div class="lbl">2× &nbsp;ANIMATED</div><canvas id="s2" width="240" height="250"></canvas></div>
+  <div class="col"><div class="lbl">3× DETAIL</div><canvas id="s3" width="360" height="375"></canvas></div>
+</div>
+
+<div class="ctl">
+  <button id="bIdle" class="on">IDLE 呼吸</button>
+  <button id="bPlay">PLAYING 律动</button>
+  <button id="bPause">⏸ 暂停</button>
+</div>
+
+<div class="pal" id="pal"></div>
+<div class="note" id="note"></div>
+
+<script>
+// ══════════════════════════════════════════════════════════
+//  PALETTE — body is PURPLE now, gold only as rim accent
+// ══════════════════════════════════════════════════════════
+const PAL = {
+  // ocean background — extra mid steps so the depth ramp
+  // quantizes smoothly instead of banding
+  bgL:[168,245,240],  // caustic crest / brightest highlight
+  bg0:[ 94,216,216],
+  bg0b:[ 70,186,212],
+  bg1:[ 52,152,200],
+  bg1b:[ 40,120,180],
+  bg2:[ 30, 90,160],
+  bg2b:[ 26, 66,134],
+  bg3:[ 22, 44,110],
+  bg3b:[ 16, 28, 86],
+  bg4:[ 12, 16, 64],
+  bg5:[  6,  8, 42],  // deepest abyss
+
+  // MANTLE / BODY — purple ramp (was gold)
+  bD:[ 46, 14, 78],   // deepest shadow
+  bC:[ 86, 28,132],   // shadow
+  bB:[138, 52,186],   // mid
+  bA:[186, 96,224],   // light
+  bH:[224,160,242],   // highlight
+
+  // Tentacle ramp. Deliberately one step DARKER than the body ramp so
+  // the head carries the highest values and the arms sit behind it.
+  // The pink end is gone: it made the arms outshine the head.
+  t0:[ 30,  8, 58],
+  t1:[ 52, 16, 90],
+  t2:[ 84, 28,130],
+  t3:[116, 40,166],
+  t4:[146, 62,192],
+  t5:[176, 92,212],
+  t6:[200,126,226],
+
+  // gold — rim light + mantle crest only
+  gA:[250,224,110], gB:[224,166, 44],
+
+  // suckers
+  sW:[238,232,248], sS:[176,160,208], sD:[ 36, 14, 52],
+
+  // sunglasses
+  kK:[ 12,  8, 18], kD:[ 34, 28, 46], kH:[ 92, 82,112], kS:[255,255,255],
+};
+const QUANT=Object.entries(PAL).map(([k,v])=>({k,v}));
+function nearest(r,g,b){let q=null,bd=1e9;for(const{v}of QUANT){const d=(r-v[0])**2+(g-v[1])**2+(b-v[2])**2;if(d<bd){bd=d;q=v;}}return q;}
+function rgb(c){return `rgb(${c[0]},${c[1]},${c[2]})`;}
+
+const SW=120, SH=125, SS=4;
+const hi=document.createElement('canvas');
+hi.width=SW*SS; hi.height=SH*SS;
+const h=hi.getContext('2d');
+
+function chainCubics(segs, perSeg){
+  const out=[];
+  segs.forEach((sg,si)=>{
+    const [p0,c1,c2,p1]=sg;
+    for(let i=(si===0?0:1);i<=perSeg;i++){
+      const t=i/perSeg,u=1-t;
+      out.push({
+        x:u**3*p0.x+3*u**2*t*c1.x+3*u*t**2*c2.x+t**3*p1.x,
+        y:u**3*p0.y+3*u**2*t*c1.y+3*u*t**2*c2.y+t**3*p1.y,
+      });
+    }
+  });
+  return out;
+}
+
+// ══════════════════════════════════════════════════════════
+//  ANIMATION STATE
+// ══════════════════════════════════════════════════════════
+let mode='idle';       // 'idle' | 'playing' | 'paused'
+let clock=0;           // advances each frame
+
+// Per-arm timing. Arms are indexed outside-in on the left (0-3) then
+// inside-out on the right (4-7). Phases are staggered so the lift
+// ripples from the outer arms toward the middle, and the two sides
+// run roughly half a cycle apart — one side rising while the other
+// settles. The offsets are not exact fractions, so the pattern never
+// locks into a visible rhythm.
+const ARM_ANIM = [
+  // left side, outer → inner
+  {phase:0.00, amp:1.00, freq:0.88},
+  {phase:0.62, amp:0.86, freq:0.94},
+  {phase:1.21, amp:0.92, freq:0.83},
+  {phase:1.77, amp:0.74, freq:1.02},
+  // right side, inner → outer, offset about half a cycle
+  {phase:3.31, amp:0.78, freq:0.97},
+  {phase:3.88, amp:0.94, freq:0.86},
+  {phase:4.52, amp:0.83, freq:1.00},
+  {phase:5.09, amp:0.98, freq:0.81},
+];
+
+// ══════════════════════════════════════════════════════════
+//  ARMS — a fanned crown, not a curtain
+//
+//  Each arm is a path walked step by step, so the pose is described by
+//  a few readable numbers instead of ten coordinates:
+//    rx    where the arm leaves the body (x offset from centre line)
+//    ph0   heading as it leaves the mouth (deg, 0 = out, 90 = straight down)
+//    th    heading once it has turned upward (deg from vertical, bigger = flatter)
+//    tb    fraction of the length over which that first turn happens
+//    L     total length
+//    hk    how far the tip rolls over at the end (deg)
+//    hs    where along the length that roll-over begins
+//    rw/tw root and tip width
+//
+//  Outer arms are lower and flatter, inner arms climb higher, so the
+//  eight read as separate limbs spread across an arc.
+// ══════════════════════════════════════════════════════════
+const ARMS = [
+  // left side, outer -> inner: outer arms sit lower and reach wider
+  {side:-1, rx:10, ph0:30, th:38, tb:.30, L:70, hk:150, hs:.52, rw:13.0, tw:2.6, ss:6.2},
+  {side:-1, rx: 8, ph0:26, th:28, tb:.30, L:76, hk:156, hs:.54, rw:12.4, tw:2.6, ss:6.0},
+  {side:-1, rx: 6, ph0:22, th:19, tb:.32, L:82, hk:162, hs:.56, rw:11.8, tw:2.6, ss:5.8},
+  {side:-1, rx: 4, ph0:18, th:10, tb:.34, L:88, hk:168, hs:.58, rw:11.2, tw:2.6, ss:5.6},
+  // right side, inner -> outer: close to the left set but deliberately not a mirror
+  {side: 1, rx: 4, ph0:20, th:12, tb:.33, L:86, hk:166, hs:.57, rw:11.2, tw:2.6, ss:5.6},
+  {side: 1, rx: 6, ph0:23, th:21, tb:.31, L:80, hk:160, hs:.55, rw:11.8, tw:2.6, ss:5.8},
+  {side: 1, rx: 8, ph0:27, th:31, tb:.30, L:74, hk:154, hs:.53, rw:12.4, tw:2.6, ss:6.0},
+  {side: 1, rx:10, ph0:31, th:41, tb:.30, L:68, hk:148, hs:.51, rw:13.0, tw:2.6, ss:6.2},
+];
+
+// Body anchors. The sac runs from MY-mh*0.58 (apex) down to
+// MY+mh*1.02 (mouth); arms emerge from that mouth, so BY sits there.
+const CX=60*SS, MTOP=48*SS, MY=62*SS, FY=80*SS, BY=94*SS;
+
+// Eased 0..1 step
+const smoothstep=(a,b,x)=>{const t=Math.max(0,Math.min(1,(x-a)/(b-a)));return t*t*(3-2*t);};
+
+// Walk the arm and return control points in the same 10-point layout
+// the animation and renderer already use.
+function armShape(arm){
+  const D=Math.PI/180, N=9;
+  const ds=arm.L/N;
+  const up=-(90-arm.th)*D, p0=arm.ph0*D;
+  let x=arm.rx, y=0;
+  const raw=[];
+  for(let i=0;i<=N;i++){
+    const t=i/N;
+    const phi=p0+(up-p0)*smoothstep(0,arm.tb,t)+arm.hk*D*smoothstep(arm.hs,1,t);
+    raw.push([arm.side*x, y]);
+    x+=Math.cos(phi)*ds; y+=Math.sin(phi)*ds;
+  }
+  return raw;
+}
+
+// How strongly each point responds to the wave: root pinned, tip free.
+const SWAY=[0,.06,.15,.27,.42,.58,.73,.86,.95,1.0];
+
+function armPoints(armIdx){
+  const arm=ARMS[armIdx];
+  const an=ARM_ANIM[armIdx];
+  const S=SS;
+  const base=armShape(arm);
+
+  let amp, speed;
+  if(mode==='playing'){ amp=7.0*an.amp; speed=0.072*an.freq; }
+  else if(mode==='idle'){ amp=2.6*an.amp; speed=0.020*an.freq; }
+  else { amp=0; speed=0; }
+
+  // Vertical undulation with a wave that travels root → tip.
+  const moved = base.map(([dx,dy],i)=>{
+    const w = SWAY[i];
+    const ph = clock*speed + an.phase - w*2.0;
+    const lift = Math.sin(ph) * amp * w * 1.15;
+    const reach = Math.sin(ph - Math.PI*0.5) * amp * w * 0.30;
+    return {x:CX+(dx + reach*arm.side)*S, y:BY+(dy - lift)*S};
+  });
+
+  // Catmull-Rom through the points gives a smooth curve with no kinks
+  const out=[];
+  const P=(i)=>moved[Math.max(0,Math.min(moved.length-1,i))];
+  for(let i=0;i<moved.length-1;i++){
+    const p0=P(i-1),p1=P(i),p2=P(i+1),p3=P(i+2);
+    for(let k=0;k<(i===moved.length-2? 21 : 20);k++){
+      const t=k/20,t2=t*t,t3=t2*t;
+      out.push({
+        x:0.5*((2*p1.x)+(-p0.x+p2.x)*t+(2*p0.x-5*p1.x+4*p2.x-p3.x)*t2+(-p0.x+3*p1.x-3*p2.x+p3.x)*t3),
+        y:0.5*((2*p1.y)+(-p0.y+p2.y)*t+(2*p0.y-5*p1.y+4*p2.y-p3.y)*t2+(-p0.y+3*p1.y-3*p2.y+p3.y)*t3),
+      });
+    }
+  }
+  return out;
+}
+
+function tentacle(pts, rootW, tipW, suckerStep, suckerSide=1, depth=1){
+  const n=pts.length;
+  // Arms are thick at the root and thin out smoothly toward the tip.
+  const widthAt = t => (rootW - tipW)*Math.pow(1-t, 1.35) + tipW;
+
+  // Atmospheric depth: back arms are pulled toward the deep-water
+  // colour, front arms keep their full value.
+  const fog = 1 - depth;                       // 1 = furthest back
+  const mix = (c)=>{
+    const d=PAL.bg3;
+    const f=fog*0.42;
+    return [c[0]+(d[0]-c[0])*f, c[1]+(d[1]-c[1])*f, c[2]+(d[2]-c[2])*f];
+  };
+
+  // Volume shading: dark rim, then four bands that stack toward a
+  // highlight sitting on the TOP edge (light comes from above).
+  const layers=[
+    {k:0.00,c:PAL.t0, bias:0},
+    {k:0.10,c:PAL.t1, bias:0},
+    {k:0.26,c:PAL.t2, bias:0.10},
+    {k:0.46,c:PAL.t3, bias:0.18},
+    {k:0.66,c:PAL.t4, bias:0.24},
+    {k:0.84,c:PAL.t5, bias:0.28},
+  ];
+  layers.forEach(({k,c,bias})=>{
+    h.beginPath();
+    for(let pass=0;pass<2;pass++){
+      const order = pass===0 ? [...Array(n).keys()] : [...Array(n).keys()].reverse();
+      order.forEach((i,j)=>{
+        const t=i/(n-1);
+        const wF=widthAt(t)/2, w=wF*(1-k);
+        const p=pts[i];
+        const pn=pts[Math.min(i+1,n-1)], pp=pts[Math.max(i-1,0)];
+        const dx=pn.x-pp.x, dy=pn.y-pp.y, L=Math.hypot(dx,dy)||1;
+        let nx=-dy/L, ny=dx/L;
+        // Orient the normal so it always points UP the screen; the
+        // highlight then lands on the top edge whichever way the
+        // arm is travelling.
+        if(ny>0){ nx=-nx; ny=-ny; }
+        const shift = wF*bias;
+        const sgn = pass===0 ? 1 : -1;
+        const ox=p.x+nx*(w*sgn+shift), oy=p.y+ny*(w*sgn+shift);
+        (pass===0&&j===0) ? h.moveTo(ox,oy) : h.lineTo(ox,oy);
+      });
+    }
+    h.closePath(); h.fillStyle=rgb(mix(c)); h.fill();
+  });
+
+  // ── SUCKERS ──
+  // Few, large and legible at the root, then smaller toward the tip.
+  // Only the first stretch of the arm gets them; past ~70% the arm is
+  // too thin for a cup to read.
+  const totalLen = (()=>{ let L=0; for(let i=1;i<n;i++) L+=Math.hypot(pts[i].x-pts[i-1].x, pts[i].y-pts[i-1].y); return L; })();
+  let travelled=0, acc=0, count=0;
+
+  for(let i=1;i<n;i++){
+    const p=pts[i], q=pts[i-1];
+    const seg=Math.hypot(p.x-q.x,p.y-q.y);
+    travelled+=seg; acc+=seg;
+
+    const t = travelled/totalLen;
+    if(t < 0.10 || t > 0.74) continue;
+
+    const armW = widthAt(t)/2;
+    const sR = armW * 0.52;                    // clearly a cup, not a dot
+    if(sR < 1.05*SS) continue;
+
+    // Spacing is about 3 cup-diameters, so each one stands alone.
+    const step = sR*3.1;
+    if(acc < step) continue;
+    acc=0; count++;
+
+    const dx=p.x-q.x, dy=p.y-q.y, L=seg||1;
+    let nx=-dy/L, ny=dx/L;
+    // sit on the outward/lower flank, away from the top highlight
+    const outward = suckerSide;
+    const off=armW*0.30*outward;
+    const sx=p.x+nx*off, sy=p.y+ny*off;
+
+    // Dark socket, pale cup, darker mouth, tiny highlight
+    h.beginPath();h.arc(sx,sy,sR*1.22,0,Math.PI*2);h.fillStyle=rgb(mix(PAL.t0));h.fill();
+    h.beginPath();h.arc(sx,sy,sR,0,Math.PI*2);h.fillStyle=rgb(mix(PAL.sW));h.fill();
+    h.beginPath();h.arc(sx+sR*0.10,sy+sR*0.12,sR*0.52,0,Math.PI*2);h.fillStyle=rgb(mix(PAL.sS));h.fill();
+    h.beginPath();h.arc(sx+sR*0.14,sy+sR*0.16,sR*0.26,0,Math.PI*2);h.fillStyle=rgb(mix(PAL.sD));h.fill();
+    if(sR > 1.5*SS){
+      h.beginPath();h.arc(sx-sR*0.38,sy-sR*0.40,sR*0.20,0,Math.PI*2);h.fillStyle='rgba(255,255,255,0.9)';h.fill();
+    }
+  }
+}
+
+function drawFrame(){
+  const W=SW*SS, H=SH*SS, S=SS;
+
+  // ══════════════════════════════════════════════
+  //  OCEAN — layered depth, not a single ramp
+  // ══════════════════════════════════════════════
+
+  // 1. Base vertical ramp, weighted so the bright surface band is
+  //    thin and the deep water occupies most of the frame.
+  const g=h.createLinearGradient(0,0,0,H);
+  g.addColorStop(0.00,rgb(PAL.bg0));
+  g.addColorStop(0.07,rgb(PAL.bg0));
+  g.addColorStop(0.19,rgb(PAL.bg1));
+  g.addColorStop(0.38,rgb(PAL.bg2));
+  g.addColorStop(0.62,rgb(PAL.bg3));
+  g.addColorStop(0.86,rgb(PAL.bg4));
+  g.addColorStop(1.00,rgb(PAL.bg5));
+  h.fillStyle=g;h.fillRect(0,0,W,H);
+
+  // 2. Surface caustics — bright wavering light from above.
+  //    Three overlapping sine bands that drift at different speeds.
+  h.save();
+  for(let band=0;band<3;band++){
+    const amp=(2.6-band*0.5)*S;
+    const freq=0.055+band*0.022;
+    const spd=0.018+band*0.011;
+    const baseY=(5+band*7)*S;
+    const alpha=0.17-band*0.045;
+    h.fillStyle=`rgba(190,250,255,${alpha})`;
+    h.beginPath();
+    h.moveTo(0,0);
+    for(let x=0;x<=W;x+=2*S){
+      const y=baseY+Math.sin(x*freq/S + clock*spd + band*2.1)*amp;
+      h.lineTo(x,y);
+    }
+    h.lineTo(W,0);
+    h.closePath();
+    h.fill();
+  }
+  h.restore();
+
+  // ══════════════════════════════════════════════
+  //  3. GOD RAYS — a single light source just above the
+  //  octopus's head, fanning out downward. The whole fan
+  //  drifts gently, and each beam breathes independently.
+  // ══════════════════════════════════════════════
+  // Source sits above the mantle apex, slightly off-centre,
+  // and wanders slowly as if the surface above were rippling.
+  const srcDriftX = Math.sin(clock*0.013)*5*S + Math.sin(clock*0.031)*2*S;
+  const srcDriftY = Math.cos(clock*0.019)*2.2*S;
+  const SRCX = CX + srcDriftX;
+  const SRCY = MTOP - 20*S + srcDriftY;
+
+  // Soft bloom at the source itself
+  h.save();
+  h.globalCompositeOperation='lighter';
+  const bloomR = (15 + Math.sin(clock*0.045)*2.5)*S;
+  const bloom=h.createRadialGradient(SRCX,SRCY,0,SRCX,SRCY,bloomR);
+  bloom.addColorStop(0,'rgba(215,255,255,0.40)');
+  bloom.addColorStop(0.35,'rgba(170,240,255,0.17)');
+  bloom.addColorStop(1,'rgba(120,200,255,0)');
+  h.fillStyle=bloom;
+  h.beginPath();h.arc(SRCX,SRCY,bloomR,0,Math.PI*2);h.fill();
+  h.restore();
+
+  // Radiating beams. Angles measured from straight down (PI/2).
+  // Negative = sweeping left, positive = right.
+  const BEAMS=[
+    {ang:-1.06, half:0.052, str:0.17, wob:0.047},
+    {ang:-0.78, half:0.064, str:0.24, wob:0.035},
+    {ang:-0.49, half:0.048, str:0.20, wob:0.058},
+    {ang:-0.24, half:0.072, str:0.30, wob:0.028},
+    {ang: 0.02, half:0.056, str:0.26, wob:0.051},
+    {ang: 0.27, half:0.068, str:0.29, wob:0.033},
+    {ang: 0.53, half:0.044, str:0.19, wob:0.062},
+    {ang: 0.81, half:0.060, str:0.23, wob:0.040},
+    {ang: 1.09, half:0.050, str:0.15, wob:0.044},
+  ];
+
+  const REACH = H*1.25;   // beams run past the bottom edge
+
+  h.save();
+  h.globalCompositeOperation='lighter';
+  BEAMS.forEach((bm,i)=>{
+    // each beam sways on its own timer and pulses in brightness
+    const sway = Math.sin(clock*bm.wob + i*1.37)*0.055;
+    const pulse = 0.72 + 0.28*Math.sin(clock*bm.wob*1.6 + i*2.11);
+    const a = Math.PI/2 + bm.ang + sway;
+    const hw = bm.half*(1 + Math.sin(clock*bm.wob*0.7+i)*0.12);
+
+    const x1 = SRCX + Math.cos(a-hw)*REACH;
+    const y1 = SRCY + Math.sin(a-hw)*REACH;
+    const x2 = SRCX + Math.cos(a+hw)*REACH;
+    const y2 = SRCY + Math.sin(a+hw)*REACH;
+
+    // Fade along the beam's own axis
+    const midX = SRCX + Math.cos(a)*REACH;
+    const midY = SRCY + Math.sin(a)*REACH;
+    const rg = h.createLinearGradient(SRCX,SRCY,midX,midY);
+    const s = bm.str*pulse;
+    rg.addColorStop(0.00,`rgba(210,252,255,${s*0.52})`);
+    rg.addColorStop(0.14,`rgba(180,242,255,${s*0.40})`);
+    rg.addColorStop(0.42,`rgba(140,215,255,${s*0.17})`);
+    rg.addColorStop(0.74,`rgba(105,180,250,${s*0.05})`);
+    rg.addColorStop(1.00,'rgba(80,150,240,0)');
+
+    h.fillStyle=rg;
+    h.beginPath();
+    // narrow throat at the source so the beams converge to a point
+    h.moveTo(SRCX + Math.cos(a-hw*0.18)*2.5*S, SRCY + Math.sin(a-hw*0.18)*2.5*S);
+    h.lineTo(x1,y1);
+    h.lineTo(x2,y2);
+    h.lineTo(SRCX + Math.cos(a+hw*0.18)*2.5*S, SRCY + Math.sin(a+hw*0.18)*2.5*S);
+    h.closePath();
+    h.fill();
+  });
+  h.restore();
+
+  // 4. Particulate drift — suspended matter catching the light
+  h.save();
+  for(let i=0;i<26;i++){
+    const seed=i*137.5;
+    const px=((seed*7.3)%120)*S;
+    const drift=(clock*(0.09+(i%5)*0.025)+seed)%(SH+20);
+    const py=(SH+10-drift)*S;
+    const sz=(0.5+(i%3)*0.35)*S;
+    const a=0.10+((i%4)*0.055);
+    h.fillStyle=`rgba(210,245,255,${a})`;
+    h.fillRect(px,py,sz,sz);
+  }
+  h.restore();
+
+  // 5. Depth vignette — darken the lower corners for pressure
+  const vg=h.createRadialGradient(W*0.5,H*0.32,H*0.18,W*0.5,H*0.55,H*0.78);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(2,4,30,0.45)');
+  h.fillStyle=vg;h.fillRect(0,0,W,H);
+
+  // ══════════════════════════════════════════════
+  //  6. BUBBLES — rising, expanding, spiralling
+  //  Each bubble accelerates as it climbs (less pressure
+  //  above), swells slightly, and traces a helix rather
+  //  than a straight line. Small ones trail the big ones.
+  // ══════════════════════════════════════════════
+  const BUBBLES=[
+    // x, baseRadius, speed, helixRadius, helixFreq, seed
+    {x: 14, r:2.6, sp:0.52, hx:2.2, hf:0.062, sd: 0},
+    {x: 29, r:1.5, sp:0.78, hx:1.4, hf:0.094, sd:37},
+    {x: 44, r:2.0, sp:0.64, hx:1.8, hf:0.071, sd:71},
+    {x: 58, r:1.2, sp:0.92, hx:1.1, hf:0.108, sd:19},
+    {x: 72, r:2.3, sp:0.47, hx:2.5, hf:0.055, sd:94},
+    {x: 86, r:1.7, sp:0.71, hx:1.6, hf:0.086, sd:52},
+    {x: 99, r:2.9, sp:0.41, hx:2.8, hf:0.049, sd:12},
+    {x:111, r:1.4, sp:0.85, hx:1.3, hf:0.101, sd:66},
+  ];
+
+  // The sea surface is a real line the bubbles travel to. It sits at
+  // the bottom edge of the caustic band and undulates with the waves.
+  const SURF_Y = 7;                                  // sprite units
+  const surfaceAt = (px)=> (SURF_Y +
+      Math.sin(px/S*0.09 + clock*0.026)*1.1 +
+      Math.sin(px/S*0.21 - clock*0.041)*0.5) * S;
+
+  const START_Y = SH + 6;                            // below the frame
+  const TRAVEL  = START_Y - SURF_Y;                  // distance to surface
+
+  // A bubble's life: RISE (0→1) then BURST (a short fixed time).
+  // Rise length is per-bubble so they do not break in unison.
+  const BURST_LEN = 16;                              // frames
+
+  // Ripples spawned by bursts are collected here and drawn after the
+  // bubbles, so they always sit on the surface line.
+  const ripples = [];
+  const splashes = [];
+
+  BUBBLES.forEach((b,i)=>{
+    const riseLen = TRAVEL / (b.sp*1.45);            // frames to reach surface
+    const cycle   = riseLen + BURST_LEN + 14;        // + idle gap before next
+    const t       = ((clock + b.sd*3.1) % cycle);
+
+    // ── Where along its life is this bubble? ──
+    const rising  = t < riseLen;
+    const burstT  = t - riseLen;                     // frames since contact
+    const bursting= !rising && burstT < BURST_LEN;
+    if(!rising && !bursting) return;                 // resting between lives
+
+    const ph    = clock*b.hf + b.sd*0.3;
+    const depth = Math.cos(ph);
+    const hxAmp = b.hx*S;
+
+    if(rising){
+      const raw  = t/riseLen;                        // 0 → 1
+      // Accelerating climb that eases out the last few pixels as the
+      // bubble meets the surface tension.
+      // Position is monotonic: it only ever moves up. The slow-down at
+      // the surface comes from the curve's own shape, not from scaling
+      // the distance travelled.
+      const prog = 1 - Math.pow(1 - raw, 1.0 + raw*0.55);
+
+      const hx   = Math.sin(ph)*hxAmp * (1 - raw*0.55);  // helix tightens
+      const bx   = b.x*S + hx;
+      const surf = surfaceAt(bx);
+      const by   = (START_Y - prog*TRAVEL)*S;
+      const byC  = Math.max(by, surf + 0.6*S);       // rests on the surface
+
+      // Gas expands as pressure drops
+      const rr   = b.r*(0.74 + raw*0.55)*S;
+      const R    = rr*(0.88 + depth*0.12);
+
+      // Squash against the surface just before it pops
+      const press = raw > 0.93 ? (raw-0.93)/0.07 : 0;
+      const Rx = R*(1 + press*0.30);
+      const Ry = R*(0.88 - press*0.34);
+
+      const fadeIn = Math.min(1, raw*6);
+      const a = (0.28 + 0.24*raw) * fadeIn * (0.82 + depth*0.18);
+
+      drawBubble(bx, byC, Rx, Ry, a, depth);
+
+      // Wake
+      for(let k=1;k<=2;k++){
+        const tr = prog - k*0.045;
+        if(tr <= 0.02) continue;
+        const wy = (START_Y - tr*TRAVEL)*S;
+        if(wy < surf + 2*S) continue;
+        const wx = b.x*S + Math.sin(ph - k*0.5)*hxAmp*0.7*(1-raw*0.55);
+        const wr = R*(0.26 - k*0.07);
+        if(wr < 0.35*S) continue;
+        h.fillStyle=`rgba(215,250,255,${a*(0.40-k*0.12)})`;
+        h.beginPath();h.arc(wx,wy,wr,0,Math.PI*2);h.fill();
+      }
+    } else {
+      // ── BURST at the surface ──
+      const u    = burstT/BURST_LEN;                 // 0 → 1
+      const bx   = b.x*S + Math.sin(ph)*hxAmp*0.45;
+      const surf = surfaceAt(bx);
+      const R0   = b.r*1.29*S;
+
+      // The film flattens and splits into a ring that opens outward
+      const ringR = R0*(1 + u*1.35);
+      const ringA = (1-u)*0.62;
+      h.strokeStyle=`rgba(225,252,255,${ringA})`;
+      h.lineWidth=Math.max(0.6*S, R0*0.2*(1-u));
+      h.beginPath();
+      h.ellipse(bx, surf + 0.5*S, ringR, ringR*0.30, 0, Math.PI, Math.PI*2); // upper arc
+      h.stroke();
+
+      // Short-lived flash at the instant of rupture
+      if(u < 0.28){
+        const fa = (1 - u/0.28)*0.55;
+        const fg = h.createRadialGradient(bx,surf,0,bx,surf,R0*1.6);
+        fg.addColorStop(0,`rgba(255,255,255,${fa})`);
+        fg.addColorStop(1,'rgba(200,245,255,0)');
+        h.fillStyle=fg;
+        h.beginPath();h.arc(bx,surf,R0*1.6,0,Math.PI*2);h.fill();
+      }
+
+      // Droplets thrown above the surface on small arcs
+      splashes.push({bx, surf, u, R0, seed:b.sd});
+
+      // Surface ripple, expanding along the waterline
+      ripples.push({bx, surf, u, R0});
+    }
+  });
+
+  // Draw one bubble (membrane, interior wash, highlight)
+  function drawBubble(bx,by,Rx,Ry,a,depth){
+    h.strokeStyle=`rgba(200,245,255,${a})`;
+    h.lineWidth=Math.max(0.7*S, Math.min(Rx,Ry)*0.26);
+    h.beginPath();h.ellipse(bx,by,Rx,Ry,0,0,Math.PI*2);h.stroke();
+
+    if(Math.min(Rx,Ry) > 1.3*S){
+      const bg2=h.createRadialGradient(bx-Rx*0.3,by-Ry*0.35,0,bx,by,Math.max(Rx,Ry));
+      bg2.addColorStop(0,`rgba(235,255,255,${a*0.42})`);
+      bg2.addColorStop(0.6,`rgba(170,230,255,${a*0.14})`);
+      bg2.addColorStop(1,'rgba(140,210,255,0)');
+      h.fillStyle=bg2;
+      h.beginPath();h.ellipse(bx,by,Rx,Ry,0,0,Math.PI*2);h.fill();
+    }
+
+    h.fillStyle=`rgba(245,255,255,${a*0.9})`;
+    const hl=Math.max(0.6*S, Math.min(Rx,Ry)*0.3);
+    h.beginPath();h.ellipse(bx-Rx*0.36,by-Ry*0.40,hl,hl*0.8,0,0,Math.PI*2);h.fill();
+  }
+
+  // Droplets from each burst
+  splashes.forEach(({bx,surf,u,R0,seed})=>{
+    for(let k=0;k<5;k++){
+      const dir  = (k-2)*0.55 + ((seed*7+k*13)%10-5)*0.03;   // spread
+      const vx   = dir*3.4*S;
+      const vy   = (3.0 + ((seed+k*5)%4)*0.55)*S;            // launch speed
+      const tt   = u*BURST_LEN;                              // frames
+      const px   = bx + vx*tt*0.22;
+      const py   = surf - (vy*tt*0.22 - 0.5*0.42*S*tt*tt*0.05);
+      if(py > surf) continue;                                // back in the water
+      const pa   = (1-u)*0.8;
+      const pr   = Math.max(0.4*S, (0.9-k*0.08)*S*(1-u*0.5));
+      h.fillStyle=`rgba(235,255,255,${pa})`;
+      h.beginPath();h.arc(px,py,pr,0,Math.PI*2);h.fill();
+    }
+  });
+
+  // Surface ripples and the waterline itself
+  ripples.forEach(({bx,surf,u,R0})=>{
+    for(let k=0;k<2;k++){
+      const uu = Math.max(0, u - k*0.18);
+      if(uu <= 0) continue;
+      const rr = R0*(1.1 + uu*3.6);
+      h.strokeStyle=`rgba(210,250,255,${(1-uu)*0.38})`;
+      h.lineWidth=0.8*S;
+      h.beginPath();
+      h.ellipse(bx, surf, rr, rr*0.16, 0, 0, Math.PI*2);
+      h.stroke();
+    }
+  });
+
+  // Waterline: a thin bright edge so the surface reads as a surface
+  h.save();
+  h.strokeStyle='rgba(215,252,255,0.55)';
+  h.lineWidth=1.1*S;
+  h.beginPath();
+  for(let x=0;x<=W;x+=2*S){
+    const y=surfaceAt(x);
+    x===0?h.moveTo(x,y):h.lineTo(x,y);
+  }
+  h.stroke();
+  // a dimmer secondary line just beneath it
+  h.strokeStyle='rgba(170,240,255,0.22)';
+  h.lineWidth=2.2*S;
+  h.beginPath();
+  for(let x=0;x<=W;x+=2*S){
+    const y=surfaceAt(x)+1.6*S;
+    x===0?h.moveTo(x,y):h.lineTo(x,y);
+  }
+  h.stroke();
+  h.restore();
+
+  // ── tentacles, back-to-front ──
+  // Back-to-front: the outermost arms are furthest from the viewer
+  // and are drawn first, darker; the inner arms overlap them and are
+  // brighter. `depth` goes 0 (back) to 1 (front).
+  const order=[0,7,1,6,2,5,3,4];
+  order.forEach((i,k)=>{
+    const arm=ARMS[i];
+    const depth = k/(order.length-1);
+    tentacle(armPoints(i), arm.rw*S, arm.tw*S, arm.ss, arm.side, depth);
+  });
+
+  // ── MANTLE: purple teardrop, breathing ──
+  // Idle = slow swell; playing = subtle pulse on the beat
+  const breathe = mode==='paused' ? 0
+    : mode==='playing' ? Math.sin(clock*0.11)*0.035
+    : Math.sin(clock*0.028)*0.022;
+  const mw=(21*(1+breathe))*S, mh=(30*(1-breathe*0.5))*S;
+
+  // Mantle silhouette. The two sides use slightly different control
+  // points so the bulb reads as living tissue rather than a mirrored
+  // vector shape: the apex leans a touch left, the right flank carries
+  // more volume, and the left shoulder sits a little lower.
+  // ONE continuous sac: mantle and head are a single body in an
+  // octopus, pinched slightly at the eye line but never split into
+  // two shapes. Drawing them as separate ellipses was what made the
+  // silhouette read as a head-plus-abdomen, i.e. a spider.
+  //
+  //        ___        rounded mantle apex
+  //      /     \
+  //     |       |     widest just above centre
+  //      \     /      pinch at the eye line
+  //      |     |      head, flaring back out
+  //       \___/       mouth, where the arms emerge
+  //
+  function mantlePath(){
+    const lean = -mw*0.06;
+    const squash = Math.sin(clock*0.021)*mh*0.012;
+
+    // Key heights down the body
+    const yApex  = MY - mh*0.58;
+    const yWide  = MY - mh*0.12;   // mantle at its fullest
+    const yPinch = MY + mh*0.40;   // waist, just above the eyes
+    const yHead  = MY + mh*0.74;   // cheeks at their widest
+    const yMouth = MY + mh*1.02;   // underside, arms emerge here
+
+    const wWide  = mw*1.00;
+    const wPinch = mw*0.80;
+    const wHead  = mw*0.90;
+    const wMouth = mw*0.40;
+
+    h.beginPath();
+    h.moveTo(CX+lean, yApex);
+
+    // ── right side, apex → widest ──
+    h.bezierCurveTo(
+      CX+mw*0.60, yApex+mh*0.04+squash,
+      CX+wWide*1.04, yWide-mh*0.20,
+      CX+wWide, yWide
+    );
+    // widest → waist
+    h.bezierCurveTo(
+      CX+wWide*0.99, yWide+mh*0.22,
+      CX+wPinch*1.03, yPinch-mh*0.12,
+      CX+wPinch, yPinch
+    );
+    // waist → cheek
+    h.bezierCurveTo(
+      CX+wPinch*1.02, yPinch+mh*0.14,
+      CX+wHead*1.01, yHead-mh*0.12,
+      CX+wHead, yHead
+    );
+    // cheek → mouth
+    h.bezierCurveTo(
+      CX+wHead*0.96, yHead+mh*0.16,
+      CX+wMouth*1.45, yMouth-mh*0.04,
+      CX+wMouth, yMouth
+    );
+
+    // ── underside ──
+    h.bezierCurveTo(
+      CX+wMouth*0.4, yMouth+mh*0.05,
+      CX-wMouth*0.4, yMouth+mh*0.05,
+      CX-wMouth, yMouth
+    );
+
+    // ── left side, mouth → apex (slimmer, shoulder lower) ──
+    h.bezierCurveTo(
+      CX-wMouth*1.42, yMouth-mh*0.04,
+      CX-wHead*0.95, yHead+mh*0.16,
+      CX-wHead*0.97, yHead
+    );
+    h.bezierCurveTo(
+      CX-wHead*0.98, yHead-mh*0.12,
+      CX-wPinch*0.99, yPinch+mh*0.14,
+      CX-wPinch*0.96, yPinch
+    );
+    h.bezierCurveTo(
+      CX-wPinch*0.99, yPinch-mh*0.12,
+      CX-wWide*0.96, yWide+mh*0.22,
+      CX-wWide*0.95, yWide
+    );
+    h.bezierCurveTo(
+      CX-wWide*0.98, yWide-mh*0.20,
+      CX-mw*0.56, yApex+mh*0.04-squash,
+      CX+lean, yApex
+    );
+    h.closePath();
+  }
+
+  // Lit from the god-ray source overhead: highlight rides the crest,
+  // and tracks the light's slow drift.
+  const litX = CX + srcDriftX*0.42;
+  const mg=h.createRadialGradient(litX, MY-mh*0.46, 1.5*S, CX, MY+mh*0.22, mw*1.65);
+  mg.addColorStop(0.00,rgb(PAL.bH)); mg.addColorStop(0.22,rgb(PAL.bA));
+  mg.addColorStop(0.52,rgb(PAL.bB)); mg.addColorStop(0.80,rgb(PAL.bC));
+  mg.addColorStop(1.00,rgb(PAL.bD));
+  mantlePath(); h.fillStyle=mg; h.fill();
+
+  // chromatophore texture
+  h.save(); mantlePath(); h.clip();
+  for(let ring=0;ring<5;ring++){
+    const ry=MY-mh*0.4+ring*mh*0.21;
+    const prog=(ry-(MY-mh*0.54))/mh;
+    const halfW=mw*(prog<0.4 ? 0.4+prog*1.4 : 0.96-(prog-0.4)*0.5);
+    const count=Math.max(2,Math.round(halfW*2/(5.5*S)));
+    for(let i=0;i<count;i++){
+      const rx=(i-(count-1)/2)*(halfW*2/Math.max(1,count));
+      h.beginPath();h.arc(CX+rx,ry,2.8*S,0,Math.PI*2);
+      h.fillStyle=`rgba(${PAL.bC[0]},${PAL.bC[1]},${PAL.bC[2]},0.45)`;h.fill();
+      h.beginPath();h.arc(CX+rx-0.7*S,ry-0.7*S,1.4*S,0,Math.PI*2);
+      h.fillStyle=`rgba(${PAL.bH[0]},${PAL.bH[1]},${PAL.bH[2]},0.38)`;h.fill();
+    }
+  }
+  h.restore();
+
+  // Gold rim light along the crest, following the overhead source
+  h.save(); mantlePath(); h.clip();
+  const rimShift = srcDriftX*0.5;
+  const rimA = 0.48 + 0.16*Math.sin(clock*0.045);
+  h.strokeStyle=`rgba(${PAL.gA[0]},${PAL.gA[1]},${PAL.gA[2]},${rimA})`;
+  h.lineWidth=2.4*S;
+  h.beginPath();
+  h.moveTo(CX-mw*0.52+rimShift, MY-mh*0.34);
+  h.quadraticCurveTo(CX+rimShift, MY-mh*0.63, CX+mw*0.52+rimShift, MY-mh*0.34);
+  h.stroke();
+  // a tighter, brighter core on the very top
+  h.strokeStyle=`rgba(255,250,225,${rimA*0.7})`;
+  h.lineWidth=1.1*S;
+  h.beginPath();
+  h.moveTo(CX-mw*0.3+rimShift, MY-mh*0.45);
+  h.quadraticCurveTo(CX+rimShift, MY-mh*0.60, CX+mw*0.3+rimShift, MY-mh*0.45);
+  h.stroke();
+  h.restore();
+
+  mantlePath(); h.strokeStyle=rgb(PAL.t0); h.lineWidth=1.6*S; h.stroke();
+
+  // ── HEAD SHADING ──
+  // No separate face shape: the head is part of the sac drawn above.
+  // What sells it is the eye bulges and the shadow in the waist.
+  h.save(); mantlePath(); h.clip();
+
+  // Shadow in the pinch, where the mantle overhangs the head
+  const waistY = MY + mh*0.40;
+  const ws=h.createLinearGradient(CX, waistY-mh*0.10, CX, waistY+mh*0.16);
+  ws.addColorStop(0,'rgba(0,0,0,0)');
+  ws.addColorStop(0.5,`rgba(${PAL.bD[0]},${PAL.bD[1]},${PAL.bD[2]},0.42)`);
+  ws.addColorStop(1,'rgba(0,0,0,0)');
+  h.fillStyle=ws;
+  h.fillRect(CX-mw*1.1, waistY-mh*0.10, mw*2.2, mh*0.26);
+
+  // Eye bulges: octopus eyes sit ON TOP of the head as domes, they
+  // are not set into a flat face. Two raised mounds either side.
+  [[-1,0],[1,0]].forEach(([sgn])=>{
+    const ex=CX+sgn*mw*0.56, ey=MY+mh*0.60;
+    const eg=h.createRadialGradient(ex-sgn*2*S, ey-4*S, 1*S, ex, ey+2*S, 12*S);
+    eg.addColorStop(0.00,rgb(PAL.bH));
+    eg.addColorStop(0.35,rgb(PAL.bA));
+    eg.addColorStop(0.75,rgb(PAL.bB));
+    eg.addColorStop(1.00,'rgba(0,0,0,0)');
+    h.fillStyle=eg;
+    h.beginPath(); h.ellipse(ex,ey,11*S,9*S,0,0,Math.PI*2); h.fill();
+  });
+
+  // Underside shadow below the mouth
+  const mouthY = MY + mh*1.02;
+  const us=h.createLinearGradient(CX, mouthY-mh*0.14, CX, mouthY);
+  us.addColorStop(0,'rgba(0,0,0,0)');
+  us.addColorStop(1,`rgba(${PAL.bD[0]},${PAL.bD[1]},${PAL.bD[2]},0.6)`);
+  h.fillStyle=us;
+  h.fillRect(CX-mw, mouthY-mh*0.14, mw*2, mh*0.15);
+
+  h.restore();
+
+  // Re-stroke the silhouette so the shading does not bleed over it
+  mantlePath(); h.strokeStyle=rgb(PAL.t0); h.lineWidth=1.6*S; h.stroke();
+
+  // ── SUNGLASSES ──
+  // Sits across the two eye domes, which are at MY + mh*0.60.
+  const gy = MY + mh*0.60;
+  h.fillStyle=rgb(PAL.kD);
+  h.beginPath();h.roundRect(CX-17*S,gy-5*S,34*S,10*S,2.8*S);h.fill();
+  h.fillStyle=rgb(PAL.kK);
+  h.beginPath();h.roundRect(CX-15.5*S,gy-4*S,13.5*S,8*S,2.2*S);h.fill();
+  h.beginPath();h.roundRect(CX+2*S,gy-4*S,13.5*S,8*S,2.2*S);h.fill();
+  h.strokeStyle=rgb(PAL.kH);h.lineWidth=1.0*S;
+  h.beginPath();h.roundRect(CX-15.5*S,gy-4*S,13.5*S,8*S,2.2*S);h.stroke();
+  h.beginPath();h.roundRect(CX+2*S,gy-4*S,13.5*S,8*S,2.2*S);h.stroke();
+  h.fillStyle=rgb(PAL.kH);
+  h.fillRect(CX-2*S,gy-1.1*S,4*S,2.2*S);
+  h.fillRect(CX-19*S,gy-0.8*S,3.5*S,1.8*S);
+  h.fillRect(CX+15.5*S,gy-0.8*S,3.5*S,1.8*S);
+
+  [[-15.5,'rgba(120,130,165,0.24)'],[2,'rgba(120,130,165,0.18)']].forEach(([ox,col])=>{
+    h.save();
+    h.beginPath();h.roundRect(CX+ox*S,gy-4*S,13.5*S,8*S,2.2*S);h.clip();
+    h.fillStyle=col;h.beginPath();
+    h.moveTo(CX+(ox+2.5)*S,gy-4*S);h.lineTo(CX+(ox+7)*S,gy-4*S);
+    h.lineTo(CX+(ox+3.5)*S,gy+4*S);h.lineTo(CX+ox*S,gy+1.2*S);
+    h.closePath();h.fill();h.restore();
+  });
+
+  // ── SPARKLE — pulses with the beat when playing ──
+  const spBase = mode==='playing' ? 0.6+0.4*Math.abs(Math.sin(clock*0.14))
+               : mode==='idle'    ? 0.55+0.2*Math.abs(Math.sin(clock*0.035))
+               : 0.7;
+  const spx=CX-11*S, spy=gy-1.8*S;
+  const sg=h.createRadialGradient(spx,spy,0,spx,spy,5*S*spBase);
+  sg.addColorStop(0,`rgba(255,255,255,${0.6*spBase})`);
+  sg.addColorStop(1,'rgba(255,255,255,0)');
+  h.fillStyle=sg;h.beginPath();h.arc(spx,spy,5*S*spBase,0,Math.PI*2);h.fill();
+
+  h.fillStyle=rgb(PAL.kS);
+  const sl=3.6*S*spBase;
+  h.fillRect(spx-sl,spy-0.5*S,sl*2,1.0*S);
+  h.fillRect(spx-0.5*S,spy-sl,1.0*S,sl*2);
+  h.save();h.translate(spx,spy);h.rotate(Math.PI/4);
+  h.fillRect(-sl*0.6,-0.42*S,sl*1.2,0.84*S);
+  h.fillRect(-0.42*S,-sl*0.6,0.84*S,sl*1.2);
+  h.restore();
+  h.beginPath();h.arc(spx,spy,1.5*S,0,Math.PI*2);h.fill();
+
+  // ── WEB / INTERBRACHIAL MEMBRANE ──
+  // The skirt of skin joining the bases of the arms. Octopuses have
+  // this; spiders do not, so it does a lot of work on the silhouette.
+  const skirtY = MY + mh*0.99;
+  h.save();
+  const skg=h.createLinearGradient(CX, skirtY-2*S, CX, skirtY+10*S);
+  skg.addColorStop(0,rgb(PAL.bC));
+  skg.addColorStop(0.6,rgb(PAL.bD));
+  skg.addColorStop(1,`rgba(${PAL.t0[0]},${PAL.t0[1]},${PAL.t0[2]},0.85)`);
+  h.fillStyle=skg;
+  h.beginPath();
+  h.moveTo(CX-mw*0.46, skirtY);
+  // scalloped lower edge — one dip between each pair of arms
+  const dips=[-0.30,-0.10,0.10,0.30];
+  h.bezierCurveTo(CX-mw*0.44, skirtY+5*S, CX-mw*0.38, skirtY+8*S, CX-mw*0.30, skirtY+7.5*S);
+  dips.forEach((d,i)=>{
+    const nx2 = i<dips.length-1 ? dips[i+1] : 0.46;
+    h.bezierCurveTo(
+      CX+mw*(d+0.05), skirtY+4*S,
+      CX+mw*(nx2-0.05), skirtY+4*S,
+      CX+mw*nx2, skirtY+(i<dips.length-1 ? 7.5*S : 6*S)
+    );
+  });
+  h.bezierCurveTo(CX+mw*0.44, skirtY+5*S, CX+mw*0.46, skirtY+2*S, CX+mw*0.46, skirtY);
+  h.closePath();
+  h.fill();
+  h.strokeStyle=rgb(PAL.t0); h.lineWidth=1.2*S; h.stroke();
+  h.restore();
+}
+
+// ══════════════════════════════════════════════════════════
+//  QUANTIZE + PAINT
+// ══════════════════════════════════════════════════════════
+const targets=[
+  {ctx:document.getElementById('s1').getContext('2d'), scale:1, grid:false},
+  {ctx:document.getElementById('s2').getContext('2d'), scale:2, grid:false},
+  {ctx:document.getElementById('s3').getContext('2d'), scale:3, grid:true},
+];
+targets.forEach(t=>t.ctx.imageSmoothingEnabled=false);
+
+function quantizeAndPaint(){
+  const src=h.getImageData(0,0,SW*SS,SH*SS).data;
+  for(let y=0;y<SH;y++){
+    for(let x=0;x<SW;x++){
+      let r=0,g2=0,b=0,n=0;
+      for(let sy=0;sy<SS;sy++)for(let sx=0;sx<SS;sx++){
+        const i=(((y*SS+sy)*SW*SS)+(x*SS+sx))*4;
+        r+=src[i];g2+=src[i+1];b+=src[i+2];n++;
+      }
+      const c=nearest(r/n,g2/n,b/n);
+      const fs=`rgb(${c[0]},${c[1]},${c[2]})`;
+      targets.forEach(t=>{
+        t.ctx.fillStyle=fs;
+        t.ctx.fillRect(x*t.scale,y*t.scale,t.scale,t.scale);
+      });
+    }
+  }
+  // grid overlay on the 3× view
+  const t3=targets[2];
+  t3.ctx.strokeStyle='rgba(255,255,255,0.035)';t3.ctx.lineWidth=0.5;
+  for(let x=0;x<=SW;x+=4){t3.ctx.beginPath();t3.ctx.moveTo(x*3,0);t3.ctx.lineTo(x*3,SH*3);t3.ctx.stroke();}
+  for(let y=0;y<=SH;y+=4){t3.ctx.beginPath();t3.ctx.moveTo(0,y*3);t3.ctx.lineTo(SW*3,y*3);t3.ctx.stroke();}
+}
+
+// ══════════════════════════════════════════════════════════
+//  LOOP — throttled to ~18fps (matches what an ESP32 can push)
+// ══════════════════════════════════════════════════════════
+let lastT=0;
+function loop(ts){
+  if(ts-lastT > 55){
+    lastT=ts;
+    if(mode!=='paused') clock++;
+    drawFrame();
+    quantizeAndPaint();
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// Controls
+const btns={idle:document.getElementById('bIdle'),
+            playing:document.getElementById('bPlay'),
+            paused:document.getElementById('bPause')};
+function setMode(m){
+  mode=m;
+  Object.entries(btns).forEach(([k,b])=>b.classList.toggle('on',k===m));
+}
+btns.idle.onclick=()=>setMode('idle');
+btns.playing.onclick=()=>setMode('playing');
+btns.paused.onclick=()=>setMode('paused');
+
+// Palette
+const palDiv=document.getElementById('pal');
+QUANT.forEach(({k,v})=>{
+  const d=document.createElement('div');d.className='sw';
+  d.style.background=`rgb(${v[0]},${v[1]},${v[2]})`;d.title=k;
+  palDiv.appendChild(d);
+});
+
+document.getElementById('note').innerHTML=`
+<b>身体</b> 紫色五档渐变 bD→bH，金色只作头顶边缘光，不再是主色。<br>
+<b>触手</b> 缩短约 40%，8条各自独立的长度/钩高/下摆方向，无镜像对称。<br>
+<b>动效</b> 每条触手一组 {phase, amp, freq}，正弦波按 sway 权重从根部 0 到尖端 1 递增，
+所以根部几乎不动、尖端摆幅最大。IDLE 振幅 1.8px / 慢速；PLAYING 振幅 5.5px / 快速。<br>
+<b>呼吸</b> 外套膜宽高反向缩放模拟换水；闪光点亮度跟拍脉冲。<br>
+<b>帧率</b> 限制 18fps，对应 ESP32 实际刷新能力。
+`;
+</script>
+</body>
+</html>

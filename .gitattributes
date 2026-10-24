@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+*.png binary
+
+main/radio_font.c linguist-generated=true
+main/radio_font_title.c linguist-generated=true
+main/radio_octopus_assets.h linguist-generated=true
+main/radio_cities.h linguist-generated=true
+main/radio_frequency_data.h linguist-generated=true

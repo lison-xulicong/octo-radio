@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Octopus asset export</title>
+<style>body{background:#111;color:#ccc;font:13px monospace;padding:16px}canvas{image-rendering:pixelated;width:240px;margin-right:8px;border:1px solid #333}</style>
+</head>
+<body>
+<div id="log">rendering…</div>
+<div id="previews"></div>
+<script>document.write('<script src="./octopus-scene.core.js?v=' + Date.now() + '"><\/script>');</script>
+<script>
+// Renders the static layers of the main-page scene and saves them as JSON for
+// tools/octopus/gen_assets.js. The firmware shows scene rows ROW0..ROW0+ROWS of
+// the simulator's 120x160 scene, at panel y = 0..190, the same place the
+// simulator draws it; the header and labels are composited over it.
+const ROW0 = 0, ROWS = 95;
+const SURF_OFF = 0;           // the design's own surface; the header sits over it
+
+const log = (m)=>{ document.getElementById('log').textContent += '\n' + m; };
+
+function render(layers){
+  mode = 'paused';            // no breathing: the body is a static sprite
+  clock = 0;
+  globalThis.OCTO_LAYERS = Object.assign({surfOff:SURF_OFF}, layers);
+  drawFrame();
+  return h.getImageData(0, 0, SW*SS, SH*SS).data;
+}
+
+// Average each SSxSS block of the cropped band; returns [r,g,b,a] floats.
+function blocks(data){
+  const out = [];
+  for(let y=0; y<ROWS; y++){
+    for(let x=0; x<SW; x++){
+      let r=0,g=0,b=0,a=0,wr=0,wg=0,wb=0;
+      for(let sy=0; sy<SS; sy++) for(let sx=0; sx<SS; sx++){
+        const i = (((ROW0+y)*SS+sy)*SW*SS + (x*SS+sx))*4;
+        const al = data[i+3]/255;
+        r+=data[i]; g+=data[i+1]; b+=data[i+2]; a+=al;
+        wr+=data[i]*al; wg+=data[i+1]*al; wb+=data[i+2]*al;
+      }
+      const n = SS*SS;
+      out.push({r:r/n, g:g/n, b:b/n, a:a/n, wr: a? wr/a:0, wg: a? wg/a:0, wb: a? wb/a:0});
+    }
+  }
+  return out;
+}
+
+const palIndex = (r,g,b)=>{
+  let best=0, bd=1e18;
+  QUANT.forEach(({v},i)=>{ const d=(r-v[0])**2+(g-v[1])**2+(b-v[2])**2; if(d<bd){bd=d;best=i;} });
+  return best;
+};
+
+// The firmware animates the caustic bands, the light beams and the gold crest
+// glint itself, so none of them may be baked into the static layers.
+const staticOff = {rays:false, particles:false, bubbles:false, arms:false, sparkle:false, rim:false};
+const bg   = blocks(render(Object.assign({ocean:true, caustics:false, vignette:true, body:false}, staticOff)));
+const body = blocks(render(Object.assign({ocean:false, caustics:false, vignette:false, body:true}, staticOff)));
+const sparkle = Object.assign({}, globalThis.OCTO_SPARKLE);
+const beams = Object.assign({}, globalThis.OCTO_BEAMS);
+
+// Arm geometry, in device scene coordinates (sprite px, origin at the top of
+// the band). armShape() is the simulator's own rest pose.
+const cx = CX/SS, by = BY/SS - ROW0;
+const arms = ARMS.map(a=>({
+  side:a.side, rw:a.rw, tw:a.tw, ss:a.ss,
+  pts: armShape(a).map(([x,y])=>[+(cx+x).toFixed(3), +(by+y).toFixed(3)]),
+}));
+
+// Mantle metrics for the crest glint (octopus-scene.core.js: mw = 21, mh = 30 at rest).
+const mantle = {cx: CX/SS, my: MY/SS - ROW0, mw: 21, mh: 30};
+
+const out = {
+  width: SW, height: ROWS, row0: ROW0, surfOff: SURF_OFF,
+  palette: QUANT.map(({k,v})=>({name:k, rgb:v})),
+  bg:   bg.map(p=>palIndex(p.r,p.g,p.b)),
+  body: body.map(p=> p.a>=0.5 ? palIndex(p.wr,p.wg,p.wb) : -1),
+  arms, armAnim: ARM_ANIM, sway: SWAY,
+  beams: beams.beams, reach: beams.reach,
+  mantle,
+  anchors: {cx, by, mtop: MTOP/SS - ROW0},
+  sparkle: {x: sparkle.x, y: sparkle.y - ROW0},
+};
+
+// Previews, so the export can be checked by eye
+function preview(fn){
+  const c=document.createElement('canvas'); c.width=SW; c.height=ROWS;
+  const x=c.getContext('2d'), im=x.createImageData(SW,ROWS);
+  for(let i=0;i<SW*ROWS;i++){ const v=fn(i); im.data.set(v,i*4); }
+  x.putImageData(im,0,0); document.getElementById('previews').appendChild(c);
+}
+const P = (i)=>QUANT[i].v;
+preview(i=>[...P(out.bg[i]),255]);
+preview(i=> out.body[i]<0 ? [255,0,255,255] : [...P(out.body[i]),255]);
+
+fetch('out/octopus_layers.json', {method:'POST', body: JSON.stringify(out)})
+  .then(r=>r.text()).then(t=>{ log('saved: '+t+'  palette='+out.palette.length+'  beams='+out.beams.length+'  sparkle='+JSON.stringify(out.sparkle)); window.EXPORT_DONE=true; })
+  .catch(e=>{ log('save failed: '+e); window.EXPORT_DONE='error: '+e; });
+</script>
+</body>
+</html>
