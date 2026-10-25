@@ -136,6 +136,29 @@ int main(int argc, char **argv) {
         ++fail;
     }
 
+    // Screen blanking must pause scene timing without releasing the panel
+    // buffers. Keeping the frame held preserves band_guard_flush while the
+    // backlight is off and makes a station change safe immediately on wake.
+    const uint32_t pause_epoch = radio_octopus_epoch();
+    OctopusOverlay *paused_overlay = radio_octopus_acquire();
+    radio_octopus_pause();
+    if (!radio_octopus_active() || radio_octopus_acquire() != paused_overlay ||
+        radio_octopus_epoch() != pause_epoch) {
+        std::printf("FAIL pause released the octopus buffers\n");
+        ++fail;
+    }
+    g_fake_now_us += 30000000;
+    std::memset(g_written, 0, sizeof(g_written));
+    if (!radio_octopus_draw_frame(false)) {
+        std::printf("FAIL draw after pause\n");
+        ++fail;
+    }
+    uint16_t paused_row[240];
+    if (!radio_octopus_capture_row(100, paused_row)) {
+        std::printf("FAIL capture after pause\n");
+        ++fail;
+    }
+
     // The header band must darken the scene: compare the band rows with the
     // same frame drawn without an overlay.
     {

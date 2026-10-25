@@ -963,6 +963,8 @@ uint32_t radio_octopus_last_frame_us() { return s_last_frame_us; }
 
 bool radio_octopus_active() { return s_frame_held; }
 
+void radio_octopus_pause() { s_last_us = 0; }
+
 bool radio_octopus_draw_frame(bool playing) {
     if (!ensure_buffers()) return false;
     const int64_t start = esp_timer_get_time();

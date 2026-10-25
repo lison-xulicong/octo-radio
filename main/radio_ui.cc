@@ -1167,10 +1167,12 @@ void band_guard_flush(lv_display_t *display, const lv_area_t *area, uint8_t *pix
     s_panel_flush(display, area, pixels);
 }
 
-// Runs in the LVGL task. Off the main page, or with the screen blanked, the
-// scene gives its buffers back. The timer's period follows the measured frame
-// time so the scene never holds the LVGL task for more than about 45% of the
-// time, whatever the device manages.
+// Runs in the LVGL task. Screen blanking pauses scene time but deliberately
+// retains the panel buffers: releasing them can make wake-time reallocation
+// fail, leaving the band unguarded when a station change redraws LVGL. Off the
+// main page, drawing is skipped but the buffers remain available for return.
+// The timer's period follows measured frame time so the scene never holds the
+// LVGL task for more than about 45% of the time, whatever the device manages.
 // Renders one scene frame, repainting the overlay when it has changed. Returns
 // false while the buffers are unavailable. Call with the LVGL lock held: the
 // scene goes straight to the panel, the same way LVGL's own flush does.
@@ -1188,12 +1190,8 @@ bool draw_octopus_frame() {
 }
 
 void octopus_timer_callback(lv_timer_t *timer) {
-    // The buffers stay allocated across page changes. Giving them back would
-    // mean re-allocating on the way home, which can fail on a busy heap, and
-    // until the first frame lands LVGL's plain background shows through as a
-    // black band where the scene belongs.
     if (!radio_display_screen_on()) {
-        radio_octopus_release();
+        radio_octopus_pause();
         return;
     }
     if (s_page != Page::Main) return;

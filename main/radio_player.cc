@@ -422,7 +422,7 @@ StreamResult stream_station(std::size_t station, uint32_t generation) {
     config.timeout_ms = 3000;
     config.buffer_size = 1024;
     config.buffer_size_tx = 512;
-    config.user_agent = "Octo-Radio/1.0";
+    config.user_agent = "Octo-Radio/1.1";
     config.keep_alive_enable = true;
     config.disable_auto_redirect = false;
     config.max_redirection_count = 4;

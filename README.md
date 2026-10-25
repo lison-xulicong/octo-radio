@@ -1,4 +1,4 @@
-# Octo Radio 1.0
+# Octo Radio 1.1
 
 [English](README.en.md) | **简体中文**
 

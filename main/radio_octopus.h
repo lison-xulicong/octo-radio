@@ -75,6 +75,10 @@ uint32_t radio_octopus_last_frame_us();
 // drawn since they were allocated.
 bool radio_octopus_active();
 
+// Stops advancing scene time without releasing the panel buffers. Used while
+// the display is blanked so wake and station changes cannot expose black rows.
+void radio_octopus_pause();
+
 // Waits for in-flight transfers and frees the frame buffers.
 void radio_octopus_release();
 

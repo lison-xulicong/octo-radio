@@ -109,7 +109,7 @@ bool http_get(const char *url, char *response, std::size_t capacity,
     config.timeout_ms = 5000;
     config.buffer_size = 2048;
     config.buffer_size_tx = 512;
-    config.user_agent = "Octo-Radio/1.0";
+    config.user_agent = "Octo-Radio/1.1";
     config.keep_alive_enable = false;
     config.disable_auto_redirect = false;
     config.max_redirection_count = 3;

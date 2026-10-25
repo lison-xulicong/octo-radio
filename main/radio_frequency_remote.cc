@@ -54,7 +54,7 @@ FetchResult fetch_metadata(uint32_t channel_id, char *response,
     config.timeout_ms = 2500;
     config.buffer_size = 1024;
     config.buffer_size_tx = 256;
-    config.user_agent = "Octo-Radio/1.0";
+    config.user_agent = "Octo-Radio/1.1";
     config.keep_alive_enable = false;
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) return FetchResult::Unavailable;
